@@ -2,201 +2,145 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const axios = require('axios');
-const qs = require('qs');
+const cheerio = require('cheerio');
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 全域快取：Underlying 清單 + 最後更新時間
-let internalCodeCache = null;
-let lastCacheUpdate = 0;
-const CACHE_REFRESH_INTERVAL = 60 * 60 * 1000; // 每小時強制刷新一次
-
 /**
- * 取得凱基內部 Underlying ID（帶自動刷新與 retry）
- * @param {string} targetStock - 使用者輸入的股票代號，如 '2330'
- * @returns {Promise<string|null>} UnderlyingInsnbr 或 null
- */
-async function getInternalId(targetStock) {
-    targetStock = targetStock.trim();
-
-    const now = Date.now();
-    const shouldRefresh = !internalCodeCache || (now - lastCacheUpdate > CACHE_REFRESH_INTERVAL);
-
-    if (shouldRefresh) {
-        console.log(`[${new Date().toISOString()}] 刷新 Underlying 清單...`);
-        try {
-            const response = await axios.post(
-                'https://warrant.kgi.com/edwebsite/api/WarrantSearch/GetUnderlyingList',
-                {},
-                {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-                        'Accept': 'application/json, text/javascript, */*; q=0.01',
-                        'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
-                        'Origin': 'https://warrant.kgi.com',
-                        'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Connection': 'keep-alive'
-                    },
-                    timeout: 10000
-                }
-            );
-
-            if (Array.isArray(response.data)) {
-                internalCodeCache = response.data;
-                lastCacheUpdate = now;
-                console.log(`清單刷新成功，共有 ${internalCodeCache.length} 筆標的`);
-            } else {
-                throw new Error('回傳格式非陣列');
-            }
-        } catch (err) {
-            console.error('GetUnderlyingList 失敗:', err.message);
-            // 如果失敗，不拋錯，讓後續用舊 cache（如果有）
-        }
-    }
-
-    if (!internalCodeCache) {
-        throw new Error('無法載入 Underlying 清單，可能 API 被阻擋或網路問題');
-    }
-
-    const match = internalCodeCache.find(
-        item => item.UnderlyingId && item.UnderlyingId.trim() === targetStock
-    );
-
-    if (match && match.UnderlyingInsnbr) {
-        return match.UnderlyingInsnbr;
-    }
-
-    // 找不到 → 強制再刷新一次（最多一次，避免無限迴圈）
-    if (!shouldRefresh) {
-        console.log(`找不到 ${targetStock}，強制再刷新一次清單...`);
-        internalCodeCache = null;
-        lastCacheUpdate = 0;
-        return await getInternalId(targetStock);
-    }
-
-    throw new Error(`找不到股票 ${targetStock} 的內部 ID。可能原因：1. 凱基未發行該股權證 2. 該股太冷門 3. API 變更`);
-}
-
-/**
- * 抓取即時權證資料
+ * 從元大權證網抓取即時權證資料（爬蟲版）
+ * @param {string} stockCode - 股票代號，如 '2330'
  */
 async function fetchRealTimeWarrants(stockCode) {
-    const internalId = await getInternalId(stockCode);
+    try {
+        const searchUrl = `https://www.warrantwin.com.tw/eyuanta/Warrant/Search.aspx?SID=${stockCode}`;
 
-    const apiUrl = 'https://warrant.kgi.com/EDWebService/WSInterfaceSwap.asmx/GetService';
-    const parametersOfJson = JSON.stringify({
-        NORMAL_OR_CATTLE_BEAR: 0,
-        INSWRT_ISSUER_NAME: "ALL",
-        STRIKE_FROM: -1,
-        STRIKE_TO: -1,
-        VOLUME: -1,
-        UND_INSTR_INSNBR: internalId,
-        LAST_DAYS_FROM: -1,
-        LAST_DAYS_TO: -1,
-        IMP_VOL: -1,
-        CP: "ALL",
-        IN_OUT_PERCENT_FROM: -1,
-        IN_OUT_PERCENT_TO: -1,
-        BID_ASK_SPREAD_PERCENT: -1,
-        LEVERAGE: -1,
-        EXECRATE: -1,
-        OUTSTANDING_PERCENT: -1,
-        BARRIER_DEAL_PERCENT: -1,
-        LocationPathName: "/edwebsite/views/warrantsearch/warrantsearch.aspx"
-    });
+        const response = await axios.get(searchUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'zh-TW,zh;q=0.8,en-US;q=0.5,en;q=0.3',
+                'Referer': 'https://www.warrantwin.com.tw/eyuanta/',
+                'Connection': 'keep-alive'
+            },
+            timeout: 15000
+        });
 
-    const requestData = qs.stringify({
-        serviceId: 'S0600013_GetWarrants',
-        parametersOfJson
-    });
+        const $ = cheerio.load(response.data);
+        const warrants = [];
 
-    const response = await axios.post(apiUrl, requestData, {
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-            'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx'
-        },
-        timeout: 15000
-    });
+        // 解析表格：元大結果為 <table> 內多行 <tr>，第一行 header
+        // 實際 selector 依頁面調整；這裡假設權證代碼在 <a href="Info.aspx?WID=...">
+        $('a[href*="Info.aspx?WID="]').each((i, el) => {
+            const link = $(el).text().trim();
+            if (!link.includes(']')) return; // 跳過非權證連結
 
-    const xmlText = response.data;
-    const jsonMatch = xmlText.match(/<ValueOfJson>([\s\S]*?)<\/ValueOfJson>/);
-    if (!jsonMatch || !jsonMatch[1]) {
-        throw new Error('無法解析權證資料，該標的可能無有效權證或 API 格式變更');
+            const [codePart, namePart] = link.split(']');
+            const symbol = codePart.replace('[', '').trim();
+            const name = namePart.trim();
+
+            // 找同列的 td（parent tr 的 siblings）
+            const row = $(el).closest('tr');
+            const cols = row.find('td');
+
+            // 欄位位置需依實際調整（用 F12 確認）
+            // 範例位置（可能變動）：
+            // 0: 權證代號 (已取)
+            // 1: 名稱
+            // 2: 成交價
+            // 8: 剩餘天數
+            // 9: 價內外程度 (e.g., 43.14%價內)
+            // 10: 買賣價差比%
+            // 11: 實質槓桿
+            // 12: 隱波%
+            const daysText = cols.eq(8)?.text().trim() || '0';
+            const moneynessText = cols.eq(9)?.text().trim() || '';
+            const spreadText = cols.eq(10)?.text().trim() || '0';
+            const levText = cols.eq(11)?.text().trim() || '0';
+            const ivText = cols.eq(12)?.text().trim() || '0';
+
+            const bid = parseFloat(cols.eq(/* 買價欄位 */)?.text().trim()) || 0; // 需確認
+            const ask = parseFloat(cols.eq(/* 賣價欄位 */)?.text().trim()) || 0;
+
+            const days = parseInt(daysText) || 0;
+            let moneyness = parseFloat(moneynessText.replace(/[^0-9.-]/g, '')) || 0;
+            if (moneynessText.includes('價外')) moneyness = -moneyness; // 價外負值
+
+            const lev = parseFloat(levText) || 0;
+            const iv = parseFloat(ivText) || 0;
+
+            if (symbol && days > 0 && lev > 0) {
+                warrants.push({
+                    symbol,
+                    name,
+                    days,
+                    moneyness,
+                    bid,
+                    ask,
+                    lev,
+                    delta: 0, // 元大不直接顯示，可後續從 Info.aspx 抓
+                    iv
+                });
+            }
+        });
+
+        if (warrants.length === 0) {
+            throw new Error(`元大未發行 ${stockCode} 的權證，或頁面結構變更`);
+        }
+
+        return warrants;
+    } catch (error) {
+        console.error('元大 fetch 錯誤:', error.message);
+        throw new Error('無法從元大載入權證資料，請檢查網路或頁面是否更新');
     }
-
-    const rawData = JSON.parse(jsonMatch[1]);
-
-    return rawData.map(item => ({
-        symbol: item.INSTR_STKID || '',
-        name: item.INSTR_NAME || '',
-        days: parseInt(item.LAST_DAYS) || 0,
-        moneyness: parseFloat(item.IN_OUT_PERCENT) || 0,
-        bid: parseFloat(item.BID1_PRICE) || 0,
-        ask: parseFloat(item.ASK1_PRICE) || 0,
-        lev: parseFloat(item.LEVERAGE) || 0,
-        delta: parseFloat(item.DELTA) || 0,
-        iv: parseFloat(item.ASK_IMP_VOL || item.IMP_VOL) || 0
-    }));
 }
 
 /**
- * 過濾權證（極短線 / 波段）
+ * 過濾邏輯（調整為元大欄位）
  */
 function filterWarrants(warrants, mode = 'swing') {
     const passed = warrants
         .filter(w => {
             if (w.days <= 0 || w.ask <= 0 || w.bid <= 0 || w.lev <= 0) return false;
 
-            const spread = (w.ask - w.bid) / w.ask;
+            const spread = (w.ask - w.bid) / w.ask || 0;
             const dlr = spread / w.lev;
 
             if (mode === 'short') {
-                // 極短線
                 return (
-                    w.days >= 30 &&
-                    w.days <= 120 && // 避免太長
+                    w.days >= 30 && w.days <= 120 &&
                     w.moneyness >= -5 && w.moneyness <= 5 &&
-                    w.delta >= 0.5 && w.delta <= 0.8 &&
                     dlr <= 0.0015
                 );
             } else {
-                // 波段（預設）
                 return (
-                    w.days >= 60 &&
-                    w.days <= 180 &&
+                    w.days >= 60 && w.days <= 180 &&
                     w.moneyness >= -10 && w.moneyness <= 5 &&
-                    w.delta >= 0.4 && w.delta <= 0.6 &&
                     dlr <= 0.0020
                 );
             }
         })
         .map(w => {
-            const spread = (w.ask - w.bid) / w.ask;
+            const spread = (w.ask - w.bid) / w.ask || 0;
             const dlr = spread / w.lev;
             return {
                 ...w,
                 dlr_percent: (dlr * 100).toFixed(3) + '%',
-                score: Math.round(100 - dlr * 15000) // 調整權重，讓低 dlr 更突出
+                score: Math.round(100 - dlr * 15000)
             };
         });
 
     return passed.sort((a, b) => b.score - a.score).slice(0, 10);
 }
 
-// 主 API
 app.get('/api/warrants', async (req, res) => {
     const { stock, mode } = req.query;
-    if (!stock) {
-        return res.status(400).json({ error: '請提供股票代號，例如 ?stock=2330' });
-    }
+    if (!stock) return res.status(400).json({ error: '請輸入股票代號，例如 ?stock=2330' });
 
     try {
         const raw = await fetchRealTimeWarrants(stock);
-        const filtered = filterWarrants(raw, mode);
+        const filtered = filterWarrants(raw, mode || 'swing');
         res.json({
             target: stock,
             mode: mode || 'swing',
@@ -204,7 +148,6 @@ app.get('/api/warrants', async (req, res) => {
             data: filtered
         });
     } catch (err) {
-        console.error('API 錯誤:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
