@@ -125,6 +125,7 @@ function filterWarrants(warrants, mode = 'swing') {
             };
         })
         .filter(w => {
+            // 暫時放寬，讓資料先顯示
             if (mode === 'short') {
                 return w.days >= 10 && w.moneyness >= -50 && w.moneyness <= 50 && parseFloat(w.dlr_percent) <= 1.0;
             } else {
