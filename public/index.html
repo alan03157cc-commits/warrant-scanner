@@ -1,49 +1,71 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <title>極品權證過濾器</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>body { background-color: #121826; color: #e2e8f0; }</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>全球權證即時過濾系統</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#111; color:#eee; margin:0; padding:20px; text-align:center; }
+    h1 { color:#0f0; }
+    input, button { padding:12px; font-size:18px; margin:10px; }
+    button { background:#0f0; border:none; color:black; cursor:pointer; }
+    #result { margin-top:30px; white-space:pre-wrap; background:#222; padding:20px; border-radius:8px; min-height:200px; text-align:left; }
+  </style>
 </head>
-<body class="p-8">
-    <div class="max-w-3xl mx-auto">
-        <h1 class="text-3xl font-bold mb-8 text-center text-blue-400">🎯 全球權證即時過濾系統</h1>
-        <div class="flex gap-4 mb-8">
-            <input type="text" id="stockCode" value="2317" placeholder="輸入股票代號 (如 2330)" 
-                class="bg-gray-800 border border-gray-600 text-white rounded-xl p-3 w-full text-lg focus:ring-2 focus:ring-blue-500 outline-none">
-            <button onclick="search('short')" class="w-40 border-2 border-green-500 text-green-500 hover:bg-green-500 hover:text-white font-bold rounded-xl transition">⚔️ 極短線</button>
-            <button onclick="search('swing')" class="w-40 border-2 border-red-500 text-red-500 hover:bg-red-500 hover:text-white font-bold rounded-xl transition">🛡️ 波段</button>
-        </div>
-        <div id="results" class="space-y-4"></div>
-    </div>
-    <script>
-        async function search(mode) {
-            const stock = document.getElementById('stockCode').value;
-            const resDiv = document.getElementById('results');
-            resDiv.innerHTML = '<div class="text-center text-gray-400 animate-pulse">⏳ 正在掃描全市場權證報價...</div>';
-            try {
-                const response = await fetch(`/api/warrants?stock=${stock}&mode=${mode}`);
-                const resData = await response.json();
-                if (resData.error) throw new Error(resData.error);
-                if (resData.data.length === 0) {
-                    resDiv.innerHTML = '<div class="text-center text-yellow-500 bg-yellow-900/20 p-4 rounded-xl">⚠️ 當下無符合「極品差槓比」標準的權證。</div>';
-                    return;
-                }
-                resDiv.innerHTML = resData.data.map(w => `
-                    <div class="bg-gray-800 p-5 rounded-2xl flex justify-between items-center border border-gray-700 hover:border-blue-500 transition">
-                        <div>
-                            <div class="text-2xl font-black text-blue-400 mb-1">${w.symbol} <span class="text-sm font-normal text-gray-400">${w.name}</span></div>
-                            <div class="text-sm text-gray-400">實質槓桿: <b class="text-white">${w.lev}x</b> | Delta: <b class="text-white">${w.delta}</b></div>
-                        </div>
-                        <div class="text-right">
-                            <div class="text-xl font-mono font-bold text-white mb-1">$${w.bid} / $${w.ask}</div>
-                            <div class="text-xs text-gray-500">剩餘 ${w.days} 天 | 價外 ${w.moneyness}%</div>
-                        </div>
-                    </div>
-                `).join('');
-            } catch (e) { resDiv.innerHTML = `<div class="text-center text-red-400 bg-red-900/20 p-4 rounded-xl">❌ 錯誤: ${e.message}</div>`; }
+<body>
+  <h1>全球權證即時過濾系統</h1>
+
+  <input type="text" id="stock" placeholder="輸入股票代號 如 2330" value="2330" />
+  <button onclick="query('swing')">波段</button>
+  <button onclick="query('short')">極短線</button>
+
+  <div id="result">查詢結果將顯示在這裡...</div>
+
+  <script>
+    async function query(mode) {
+      const stock = document.getElementById('stock').value.trim();
+      if (!stock) return alert('請輸入股票代號');
+
+      const resultDiv = document.getElementById('result');
+      resultDiv.innerHTML = '查詢中...';
+
+      try {
+        const res = await fetch(`/api/warrants?stock=${stock}&mode=${mode}`);
+        const data = await res.json();
+
+        if (data.error) {
+          resultDiv.innerHTML = `<span style="color:red">錯誤：${data.error}</span>`;
+          return;
         }
-    </script>
+
+        if (data.count === 0) {
+          resultDiv.innerHTML = '無符合條件的權證';
+          return;
+        }
+
+        let html = `<h3>${data.target} (${data.mode}) - 找到 ${data.count} 檔</h3><table border="1" style="width:100%;border-collapse:collapse;">
+          <tr style="background:#333"><th>代號</th><th>名稱</th><th>天數</th><th>價內外</th><th>買價</th><th>賣價</th><th>槓桿</th><th>DLR</th><th>分數</th></tr>`;
+
+        data.data.forEach(w => {
+          html += `<tr>
+            <td>${w.symbol}</td>
+            <td>${w.name}</td>
+            <td>${w.days}</td>
+            <td>${w.moneyness.toFixed(2)}</td>
+            <td>${w.bid.toFixed(2)}</td>
+            <td>${w.ask.toFixed(2)}</td>
+            <td>${w.lev.toFixed(2)}</td>
+            <td>${w.dlr_percent}</td>
+            <td>${w.score}</td>
+          </tr>`;
+        });
+
+        html += '</table>';
+        resultDiv.innerHTML = html;
+      } catch (err) {
+        resultDiv.innerHTML = `<span style="color:red">請求失敗：${err.message}</span>`;
+      }
+    }
+  </script>
 </body>
 </html>
