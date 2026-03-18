@@ -15,7 +15,7 @@ async function fetchRealTimeWarrants(stockCode) {
         const url = 'https://extweb.capital.com.tw/Extproduct/Program/Warrant/IndexWarrant/WarrantSearch.html';
         const postData = new URLSearchParams({
             'Underlying': stockCode.trim(),
-            'WarrantType': 'ALL', // ALL = 認購+認售
+            'WarrantType': 'ALL',
             'Issuer': 'ALL',
             'LastDaysFrom': '',
             'LastDaysTo': '',
@@ -38,66 +38,65 @@ async function fetchRealTimeWarrants(stockCode) {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
                 'Referer': 'https://extweb.capital.com.tw/Extproduct/Program/Warrant/IndexWarrant/WarrantSearch.html',
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8'
+                'Accept': 'text/html'
             },
             timeout: 20000
         });
 
         const html = response.data;
-        console.log(`群益頁面長度：${html.length}`);
+        console.log(`群益頁面取得，長度：${html.length}`);
 
-        // 清理成純文字行
+        // 清理成純文字
         const clean = html.replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ').replace(/\s{2,}/g, ' ').trim();
         const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 10);
 
         const warrants = [];
-        let currentSymbol = null;
-        let currentName = null;
+        let current = null;
 
         for (const line of lines) {
             // 找權證代碼 (6位數字)
-            const symbolMatch = line.match(/^(\d{6})\s/);
+            const symbolMatch = line.match(/^(\d{6})/);
             if (symbolMatch) {
-                currentSymbol = symbolMatch[1];
-                currentName = line.replace(/^\d{6}\s*/, '').trim();
+                current = {
+                    symbol: symbolMatch[1],
+                    name: line.replace(/^\d{6}\s*/, '').trim()
+                };
                 continue;
             }
 
-            // 如果有代碼，下一行或同一行找關鍵欄位
-            if (currentSymbol) {
+            if (current) {
                 // 天數：找數字 + 天/日
-                const daysMatch = line.match(/(\d{1,3})\s*(?:天|日)/);
-                const days = daysMatch ? parseInt(daysMatch[1]) : 0;
+                const daysMatch = line.match(/(\d{1,3})\s*(?:天|日|剩餘)/);
+                current.days = daysMatch ? parseInt(daysMatch[1]) : 0;
 
                 // 價內外
                 const moneynessMatch = line.match(/([\d.]+)\s*(價內|價外)/);
-                let moneyness = 0;
+                current.moneyness = 0;
                 if (moneynessMatch) {
-                    moneyness = parseFloat(moneynessMatch[1]);
-                    if (moneynessMatch[2].includes('價外')) moneyness = -moneyness;
+                    current.moneyness = parseFloat(moneynessMatch[1]);
+                    if (moneynessMatch[2].includes('價外')) current.moneyness = -current.moneyness;
                 }
 
-                // 實質槓桿
+                // 槓桿
                 const levMatch = line.match(/實質槓桿\s*([\d.]+)/) || line.match(/槓桿\s*([\d.]+)/);
-                const lev = levMatch ? parseFloat(levMatch[1]) : 0;
+                current.lev = levMatch ? parseFloat(levMatch[1]) : 0;
 
-                if (days > 0 && lev > 0) {
+                if (current.days > 0 && current.lev > 0) {
                     warrants.push({
-                        symbol: currentSymbol,
-                        name: currentName || '未知',
-                        days,
-                        moneyness,
-                        bid: 0, // 群益頁面需再抓買賣價，這裡先估計
+                        symbol: current.symbol,
+                        name: current.name,
+                        days: current.days,
+                        moneyness: current.moneyness,
+                        bid: 0,
                         ask: 0,
-                        lev,
+                        lev: current.lev,
                         delta: 0,
                         iv: 0
                     });
-                    console.log(`群益成功解析：${currentSymbol} ${currentName || ''} | 天數:${days} | 價內外:${moneyness} | 槓桿:${lev}`);
+                    console.log(`群益解析成功：${current.symbol} ${current.name} | 天數:${current.days} | 價內外:${current.moneyness} | 槓桿:${current.lev}`);
                 }
 
-                currentSymbol = null; // 處理完一筆
+                current = null;
             }
         }
 
@@ -126,7 +125,6 @@ function filterWarrants(warrants, mode = 'swing') {
             };
         })
         .filter(w => {
-            // 暫時放寬，讓群益資料先顯示
             if (mode === 'short') {
                 return w.days >= 10 && w.moneyness >= -50 && w.moneyness <= 50 && parseFloat(w.dlr_percent) <= 1.0;
             } else {
@@ -155,7 +153,7 @@ app.get('/api/warrants', async (req, res) => {
             data: filtered,
             debug: {
                 rawCount: raw.length,
-                msg: raw.length > 0 ? '成功從群益抓到真實資料' : '群益也無資料或解析失敗'
+                msg: raw.length > 0 ? '成功從群益抓到資料' : '群益無資料或解析失敗'
             }
         });
     } catch (err) {
