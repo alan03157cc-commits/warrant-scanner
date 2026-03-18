@@ -2,80 +2,47 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>極品權證過濾器</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background-color: #121826; color: #e2e8f0; }
-        .card { background-color: #1e293b; border: 1px solid #334155; }
-    </style>
+    <style> body { background-color: #121826; color: #e2e8f0; } </style>
 </head>
 <body class="p-6">
     <div class="max-w-4xl mx-auto">
-        <h1 class="text-2xl font-bold mb-6 flex items-center gap-2">
-            🎯 最佳權證推薦 <span class="text-sm text-gray-400 font-normal">(即時連線版)</span>
-        </h1>
-
+        <h1 class="text-2xl font-bold mb-6">🎯 最佳權證推薦 <span class="text-sm text-gray-400">(即時連線版)</span></h1>
         <div class="flex gap-4 mb-6">
-            <input type="text" id="stockCode" value="2492" placeholder="輸入代號 (如: 2492)" class="bg-gray-800 border border-gray-600 text-white text-lg rounded-lg focus:ring-blue-500 block w-full p-2.5">
-            <button onclick="search('short')" class="w-1/2 bg-gray-800 border border-green-500 text-green-400 hover:bg-gray-700 font-bold py-2 px-4 rounded-lg">
-                ⚔️ 極短線 (DLR < 0.15%)
-            </button>
-            <button onclick="search('swing')" class="w-1/2 bg-gray-800 border border-red-500 text-red-400 hover:bg-gray-700 font-bold py-2 px-4 rounded-lg">
-                🛡️ 波段留倉 (DLR < 0.2%)
-            </button>
+            <input type="text" id="stockCode" value="2492" class="bg-gray-800 border border-gray-600 text-white rounded-lg p-2.5 w-full">
+            <button onclick="search('short')" class="w-1/2 border border-green-500 text-green-400 py-2 rounded-lg">⚔️ 極短線</button>
+            <button onclick="search('swing')" class="w-1/2 border border-red-500 text-red-400 py-2 rounded-lg">🛡️ 波段</button>
         </div>
-
         <div id="results" class="space-y-4"></div>
     </div>
-
     <script>
         async function search(mode) {
             const stockCode = document.getElementById('stockCode').value;
-            if (!stockCode) return alert('請先輸入股票代號！');
-
             const resultsDiv = document.getElementById('results');
-            resultsDiv.innerHTML = '<p class="text-center text-gray-400 py-4">⏳ 正在連線交易所抓取即時報價...</p>';
-
+            resultsDiv.innerHTML = '<p class="text-center text-gray-400">⏳ 正在連線交易所...</p>';
             try {
+                // 修正關鍵：路徑開頭加上 /
                 const response = await fetch(`/api/warrants?stock=${stockCode}&mode=${mode}`);
                 const resData = await response.json();
-                
                 if (resData.error) throw new Error(resData.error);
-
                 if (resData.data.length === 0) {
-                    resultsDiv.innerHTML = '<p class="text-center text-yellow-400 py-4">目前找不到符合嚴格標準的權證。</p>';
+                    resultsDiv.innerHTML = '<p class="text-center text-yellow-400">目前找不到符合標準的權證。</p>';
                     return;
                 }
-
                 resultsDiv.innerHTML = resData.data.map(w => `
-                    <div class="card rounded-lg p-4 flex justify-between items-center hover:bg-gray-800 transition">
+                    <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center border border-gray-700">
                         <div>
-                            <div class="flex items-center gap-3 mb-2">
-                                <h2 class="text-xl font-bold text-blue-400">${w.symbol} ${w.name}</h2>
-                            </div>
-                            <div class="text-sm text-gray-400 flex gap-4">
-                                <span>槓桿: <b class="text-gray-200">${w.lev}x</b></span>
-                                <span>IV: <b class="text-gray-200">${w.iv}</b></span>
-                                <span>Delta: <b class="text-gray-200">${w.delta}</b></span>
-                                <span>差槓比: <b class="text-green-400">${w.dlr_percent}</b></span>
-                            </div>
+                            <h2 class="text-xl font-bold text-blue-400">${w.symbol} ${w.name}</h2>
+                            <div class="text-xs text-gray-400">槓桿: ${w.lev} | Delta: ${w.delta} | 差槓比: <span class="text-green-400">${w.dlr_percent}</span></div>
                         </div>
                         <div class="text-right">
-                            <div class="mb-1">
-                                <span class="text-sm text-gray-400 mr-2">委買 / 委賣</span>
-                                <span class="text-lg font-bold text-white">$${w.bid} / $${w.ask}</span>
-                            </div>
-                            <div class="text-sm flex justify-end gap-3">
-                                <span>天數: <b class="${w.days > 60 ? 'text-green-400' : 'text-red-400'}">${w.days}</b></span>
-                                <span>價外: <b class="text-red-400">${w.moneyness}%</b></span>
-                            </div>
+                            <div class="text-lg font-bold">$${w.bid} / $${w.ask}</div>
+                            <div class="text-xs text-gray-500">剩餘 ${w.days} 天 | 價外 ${w.moneyness}%</div>
                         </div>
                     </div>
                 `).join('');
-            } catch (error) {
-                resultsDiv.innerHTML = `<p class="text-center text-red-500 py-4">❌ ${error.message}</p>`;
-            }
+            } catch (error) { resultsDiv.innerHTML = `<p class="text-center text-red-500">❌ ${error.message}</p>`; }
         }
     </script>
 </body>
