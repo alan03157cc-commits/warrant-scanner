@@ -4,45 +4,45 @@
     <meta charset="UTF-8">
     <title>極品權證過濾器</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style> body { background-color: #121826; color: #e2e8f0; } </style>
+    <style>body { background-color: #121826; color: #e2e8f0; }</style>
 </head>
-<body class="p-6">
-    <div class="max-w-4xl mx-auto">
-        <h1 class="text-2xl font-bold mb-6">🎯 最佳權證推薦 <span class="text-sm text-gray-400">(即時連線版)</span></h1>
-        <div class="flex gap-4 mb-6">
-            <input type="text" id="stockCode" value="2492" class="bg-gray-800 border border-gray-600 text-white rounded-lg p-2.5 w-full">
-            <button onclick="search('short')" class="w-1/2 border border-green-500 text-green-400 py-2 rounded-lg">⚔️ 極短線</button>
-            <button onclick="search('swing')" class="w-1/2 border border-red-500 text-red-400 py-2 rounded-lg">🛡️ 波段</button>
+<body class="p-8">
+    <div class="max-w-3xl mx-auto">
+        <h1 class="text-3xl font-bold mb-8 text-center text-blue-400">🎯 全球權證即時過濾系統</h1>
+        <div class="flex gap-4 mb-8">
+            <input type="text" id="stockCode" value="2317" placeholder="輸入股票代號 (如 2330)" 
+                class="bg-gray-800 border border-gray-600 text-white rounded-xl p-3 w-full text-lg focus:ring-2 focus:ring-blue-500 outline-none">
+            <button onclick="search('short')" class="w-40 border-2 border-green-500 text-green-500 hover:bg-green-500 hover:text-white font-bold rounded-xl transition">⚔️ 極短線</button>
+            <button onclick="search('swing')" class="w-40 border-2 border-red-500 text-red-500 hover:bg-red-500 hover:text-white font-bold rounded-xl transition">🛡️ 波段</button>
         </div>
         <div id="results" class="space-y-4"></div>
     </div>
     <script>
         async function search(mode) {
-            const stockCode = document.getElementById('stockCode').value;
-            const resultsDiv = document.getElementById('results');
-            resultsDiv.innerHTML = '<p class="text-center text-gray-400">⏳ 正在連線交易所...</p>';
+            const stock = document.getElementById('stockCode').value;
+            const resDiv = document.getElementById('results');
+            resDiv.innerHTML = '<div class="text-center text-gray-400 animate-pulse">⏳ 正在掃描全市場權證報價...</div>';
             try {
-                // 修正關鍵：路徑開頭加上 /
-                const response = await fetch(`/api/warrants?stock=${stockCode}&mode=${mode}`);
+                const response = await fetch(`/api/warrants?stock=${stock}&mode=${mode}`);
                 const resData = await response.json();
                 if (resData.error) throw new Error(resData.error);
                 if (resData.data.length === 0) {
-                    resultsDiv.innerHTML = '<p class="text-center text-yellow-400">目前找不到符合標準的權證。</p>';
+                    resDiv.innerHTML = '<div class="text-center text-yellow-500 bg-yellow-900/20 p-4 rounded-xl">⚠️ 當下無符合「極品差槓比」標準的權證。</div>';
                     return;
                 }
-                resultsDiv.innerHTML = resData.data.map(w => `
-                    <div class="bg-gray-800 p-4 rounded-lg flex justify-between items-center border border-gray-700">
+                resDiv.innerHTML = resData.data.map(w => `
+                    <div class="bg-gray-800 p-5 rounded-2xl flex justify-between items-center border border-gray-700 hover:border-blue-500 transition">
                         <div>
-                            <h2 class="text-xl font-bold text-blue-400">${w.symbol} ${w.name}</h2>
-                            <div class="text-xs text-gray-400">槓桿: ${w.lev} | Delta: ${w.delta} | 差槓比: <span class="text-green-400">${w.dlr_percent}</span></div>
+                            <div class="text-2xl font-black text-blue-400 mb-1">${w.symbol} <span class="text-sm font-normal text-gray-400">${w.name}</span></div>
+                            <div class="text-sm text-gray-400">實質槓桿: <b class="text-white">${w.lev}x</b> | Delta: <b class="text-white">${w.delta}</b></div>
                         </div>
                         <div class="text-right">
-                            <div class="text-lg font-bold">$${w.bid} / $${w.ask}</div>
+                            <div class="text-xl font-mono font-bold text-white mb-1">$${w.bid} / $${w.ask}</div>
                             <div class="text-xs text-gray-500">剩餘 ${w.days} 天 | 價外 ${w.moneyness}%</div>
                         </div>
                     </div>
                 `).join('');
-            } catch (error) { resultsDiv.innerHTML = `<p class="text-center text-red-500">❌ ${error.message}</p>`; }
+            } catch (e) { resDiv.innerHTML = `<div class="text-center text-red-400 bg-red-900/20 p-4 rounded-xl">❌ 錯誤: ${e.message}</div>`; }
         }
     </script>
 </body>
