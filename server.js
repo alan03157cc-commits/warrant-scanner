@@ -24,17 +24,17 @@ async function fetchRealTimeWarrants(stockCode) {
         const html = response.data;
         console.log(`頁面長度：${html.length}`);
 
-        // 把 html 轉成行陣列（移除標籤後的純文字）
-        const cleanHtml = html.replace(/<[^>]+>/g, '\n').replace(/\s+/g, ' ').trim();
-        const lines = cleanHtml.split('\n').map(l => l.trim()).filter(l => l);
+        // 清理 HTML 標籤，轉成純文字行
+        const cleanHtml = html.replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+        const lines = cleanHtml.split('\n').map(l => l.trim()).filter(l => l.length > 10); // 過濾短行
 
         const warrants = [];
         for (let i = 0; i < lines.length - 1; i++) {
             const line = lines[i];
             const nextLine = lines[i + 1];
 
-            // 找連結行：包含 [數字] 和 Info.aspx?WID
-            if (line.includes('[ ') && line.includes('Info.aspx?WID=')) {
+            // 第一行包含 [代碼] 和 Info.aspx?WID
+            if (line.includes('[') && line.includes(']') && line.includes('Info.aspx?WID=')) {
                 // 取出 symbol 和 name
                 const symbolMatch = line.match(/\[(\d{6})\]/);
                 const symbol = symbolMatch ? symbolMatch[1] : null;
@@ -44,21 +44,26 @@ async function fetchRealTimeWarrants(stockCode) {
 
                 if (!symbol) continue;
 
-                // 下一行是數據：split 空格
-                const dataParts = nextLine.split(/\s+/).filter(p => p && p !== '--');
+                // 下一行是數據行，split 空格
+                const dataParts = nextLine.split(/\s+/).filter(p => p && p !== '--' && p !== '');
 
-                if (dataParts.length < 10) continue;
+                if (dataParts.length < 10) {
+                    console.log(`數據行太短，跳過：${nextLine.substring(0, 100)}...`);
+                    continue;
+                }
 
-                // 固定位置（根據頁面樣本）
-                const days = parseInt(dataParts[6]) || 0; // index 6: 剩餘日
+                // 固定 index
+                const days = parseInt(dataParts[6]) || 0; // index 6: 剩餘天數
                 const moneynessStr = dataParts[7] || ''; // index 7: 價內外
                 let moneyness = parseFloat(moneynessStr.replace(/[^0-9.-]/g, '')) || 0;
                 if (moneynessStr.includes('價外')) moneyness = -moneyness;
 
                 const lev = parseFloat(dataParts[9]) || 0; // index 9: 實質槓桿
 
-                const bid = parseFloat(dataParts[0]) * 0.98 || 0;
-                const ask = parseFloat(dataParts[0]) * 1.02 || 0;
+                // 成交價估計 bid/ask
+                const price = parseFloat(dataParts[0]) || 1.0;
+                const bid = price * 0.98;
+                const ask = price * 1.02;
 
                 if (days > 0 && lev > 0) {
                     warrants.push({
@@ -72,12 +77,17 @@ async function fetchRealTimeWarrants(stockCode) {
                         delta: 0,
                         iv: 0
                     });
-                    console.log(`成功解析：${symbol} ${name} | 天數:${days} | 價內外:${moneyness} | 槓桿:${lev}`);
+                    console.log(`成功解析：${symbol} ${name} | 天數:${days} | 價內外:${moneyness} | 槓桿:${lev} | 原始數據:${nextLine.substring(0, 100)}`);
+                } else {
+                    console.log(`跳過無效筆：${symbol} 天數:${days} 槓桿:${lev}`);
                 }
+
+                // 跳過下一行
+                i++;
             }
         }
 
-        console.log(`總共解析到 ${warrants.length} 筆權證`);
+        console.log(`總解析到 ${warrants.length} 筆權證`);
 
         return warrants;
     } catch (err) {
@@ -102,11 +112,11 @@ function filterWarrants(warrants, mode = 'swing') {
             };
         })
         .filter(w => {
-            // 測試超寬鬆，讓 2330 顯示
+            // 測試極寬鬆，讓資料先出來
             if (mode === 'short') {
-                return w.days >= 5 && w.moneyness >= -200 && w.moneyness <= 200 && parseFloat(w.dlr_percent) <= 2.0;
+                return w.days >= 5 && w.moneyness >= -200 && w.moneyness <= 200 && parseFloat(w.dlr_percent) <= 3.0;
             } else {
-                return w.days >= 10 && w.moneyness >= -200 && w.moneyness <= 200 && parseFloat(w.dlr_percent) <= 2.0;
+                return w.days >= 10 && w.moneyness >= -200 && w.moneyness <= 200 && parseFloat(w.dlr_percent) <= 3.0;
             }
         })
         .sort((a, b) => b.score - a.score)
@@ -131,10 +141,11 @@ app.get('/api/warrants', async (req, res) => {
             data: filtered,
             debug: {
                 rawCount: raw.length,
-                msg: raw.length > 0 ? '有資料但過濾沒通過（門檻太嚴）' : '解析失敗或元大無資料'
+                msg: raw.length > 0 ? '有原始資料，但過濾沒通過（門檻太嚴）' : '解析失敗（結構不匹配或元大無資料）'
             }
         });
     } catch (err) {
+        console.error('API 錯誤：', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -143,5 +154,5 @@ module.exports = app;
 
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`本地跑在 http://localhost:${PORT}`));
+    app.listen(PORT, () => console.log(`本地伺服器：http://localhost:${PORT}`));
 }
