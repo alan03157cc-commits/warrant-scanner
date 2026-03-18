@@ -8,117 +8,204 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-let dynamicStockCache = null;
+// 全域快取：Underlying 清單 + 最後更新時間
+let internalCodeCache = null;
+let lastCacheUpdate = 0;
+const CACHE_REFRESH_INTERVAL = 60 * 60 * 1000; // 每小時強制刷新一次
 
-// 🧠 超大型隱形大腦：你只要在網頁輸入代號，程式會自己來這裡找。
-// 涵蓋全台灣 95% 有發行權證的熱門標的，避開防火牆封鎖。
-const massiveOfflineDatabase = {
-    // 電子半導體
-    "2330":"11717", "2317":"11707", "2454":"11718", "2303":"11705", "2308":"11706", "3711":"11732", 
-    "2382":"11715", "3231":"11731", "2357":"11712", "2408":"11716", "2409":"11430", "3481":"11449", 
-    "3034":"11727", "3037":"11728", "8046":"11740", "2379":"11438", "3661":"11735", "5269":"11738", 
-    "6669":"11739", "3008":"11726", "2337":"11411", "2344":"11414", "2449":"11424", "6239":"11529", 
-    "2376":"11714", "2492":"11472", "2324":"11708", "2353":"11417", "3443":"11734", "3017":"11585",
-    "6231":"11645", // <-- 特別幫你查了系微(6231)的潛在編號
-    // 航運鋼鐵
-    "2603":"11709", "2609":"11710", "2618":"11711", "2610":"11467", "2615":"11468", "2002":"11701", 
-    "2014":"11397", "2031":"11399", "2637":"11475",
-    // 金融
-    "2881":"11722", "2882":"11723", "2886":"11724", "2891":"11725", "2880":"11479", "2883":"11482", 
-    "2884":"11483", "2885":"11484", "2887":"11486", "2890":"11488", "2892":"11490", "5880":"11516",
-    // 傳產與其他
-    "1513":"11388", "1504":"11384", "1519":"11391", "1514":"11389", "1605":"11440", "1301":"11702", 
-    "1303":"11703", "1326":"11704", "6505":"11736", "1216":"11379", "2105":"11401", "2201":"11402", 
-    "2912":"11504", "9904":"11545", "9921":"11548"
-};
+/**
+ * 取得凱基內部 Underlying ID（帶自動刷新與 retry）
+ * @param {string} targetStock - 使用者輸入的股票代號，如 '2330'
+ * @returns {Promise<string|null>} UnderlyingInsnbr 或 null
+ */
+async function getInternalId(targetStock) {
+    targetStock = targetStock.trim();
 
-async function getInternalId(stockCode) {
-    stockCode = stockCode.trim();
+    const now = Date.now();
+    const shouldRefresh = !internalCodeCache || (now - lastCacheUpdate > CACHE_REFRESH_INTERVAL);
 
-    // 嘗試 1: 強制偽裝成正常瀏覽器硬闖凱基 API
-    if (!dynamicStockCache) {
+    if (shouldRefresh) {
+        console.log(`[${new Date().toISOString()}] 刷新 Underlying 清單...`);
         try {
-            const res = await axios.post('https://warrant.kgi.com/edwebsite/api/WarrantSearch/GetUnderlyingList', {}, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
-                    'Origin': 'https://warrant.kgi.com',
-                    'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Accept': 'application/json, text/javascript, */*; q=0.01'
-                },
-                timeout: 5000
-            });
-            if (res.data && Array.isArray(res.data)) {
-                dynamicStockCache = res.data;
+            const response = await axios.post(
+                'https://warrant.kgi.com/edwebsite/api/WarrantSearch/GetUnderlyingList',
+                {},
+                {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+                        'Accept': 'application/json, text/javascript, */*; q=0.01',
+                        'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
+                        'Origin': 'https://warrant.kgi.com',
+                        'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Connection': 'keep-alive'
+                    },
+                    timeout: 10000
+                }
+            );
+
+            if (Array.isArray(response.data)) {
+                internalCodeCache = response.data;
+                lastCacheUpdate = now;
+                console.log(`清單刷新成功，共有 ${internalCodeCache.length} 筆標的`);
+            } else {
+                throw new Error('回傳格式非陣列');
             }
-        } catch (e) {
-            console.log("⚠️ Vercel IP 被凱基阻擋，自動切換至備用雲端大腦。");
+        } catch (err) {
+            console.error('GetUnderlyingList 失敗:', err.message);
+            // 如果失敗，不拋錯，讓後續用舊 cache（如果有）
         }
     }
 
-    // 嘗試 2: 如果成功抓到清單，從清單找
-    if (dynamicStockCache) {
-        const match = dynamicStockCache.find(item => item.UnderlyingId.trim() === stockCode);
-        if (match) return match.UnderlyingInsnbr;
+    if (!internalCodeCache) {
+        throw new Error('無法載入 Underlying 清單，可能 API 被阻擋或網路問題');
     }
 
-    // 嘗試 3: 如果被擋死，無縫接軌從我們的「隱形大腦」找
-    return massiveOfflineDatabase[stockCode] || null;
+    const match = internalCodeCache.find(
+        item => item.UnderlyingId && item.UnderlyingId.trim() === targetStock
+    );
+
+    if (match && match.UnderlyingInsnbr) {
+        return match.UnderlyingInsnbr;
+    }
+
+    // 找不到 → 強制再刷新一次（最多一次，避免無限迴圈）
+    if (!shouldRefresh) {
+        console.log(`找不到 ${targetStock}，強制再刷新一次清單...`);
+        internalCodeCache = null;
+        lastCacheUpdate = 0;
+        return await getInternalId(targetStock);
+    }
+
+    throw new Error(`找不到股票 ${targetStock} 的內部 ID。可能原因：1. 凱基未發行該股權證 2. 該股太冷門 3. API 變更`);
 }
 
+/**
+ * 抓取即時權證資料
+ */
+async function fetchRealTimeWarrants(stockCode) {
+    const internalId = await getInternalId(stockCode);
+
+    const apiUrl = 'https://warrant.kgi.com/EDWebService/WSInterfaceSwap.asmx/GetService';
+    const parametersOfJson = JSON.stringify({
+        NORMAL_OR_CATTLE_BEAR: 0,
+        INSWRT_ISSUER_NAME: "ALL",
+        STRIKE_FROM: -1,
+        STRIKE_TO: -1,
+        VOLUME: -1,
+        UND_INSTR_INSNBR: internalId,
+        LAST_DAYS_FROM: -1,
+        LAST_DAYS_TO: -1,
+        IMP_VOL: -1,
+        CP: "ALL",
+        IN_OUT_PERCENT_FROM: -1,
+        IN_OUT_PERCENT_TO: -1,
+        BID_ASK_SPREAD_PERCENT: -1,
+        LEVERAGE: -1,
+        EXECRATE: -1,
+        OUTSTANDING_PERCENT: -1,
+        BARRIER_DEAL_PERCENT: -1,
+        LocationPathName: "/edwebsite/views/warrantsearch/warrantsearch.aspx"
+    });
+
+    const requestData = qs.stringify({
+        serviceId: 'S0600013_GetWarrants',
+        parametersOfJson
+    });
+
+    const response = await axios.post(apiUrl, requestData, {
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+            'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx'
+        },
+        timeout: 15000
+    });
+
+    const xmlText = response.data;
+    const jsonMatch = xmlText.match(/<ValueOfJson>([\s\S]*?)<\/ValueOfJson>/);
+    if (!jsonMatch || !jsonMatch[1]) {
+        throw new Error('無法解析權證資料，該標的可能無有效權證或 API 格式變更');
+    }
+
+    const rawData = JSON.parse(jsonMatch[1]);
+
+    return rawData.map(item => ({
+        symbol: item.INSTR_STKID || '',
+        name: item.INSTR_NAME || '',
+        days: parseInt(item.LAST_DAYS) || 0,
+        moneyness: parseFloat(item.IN_OUT_PERCENT) || 0,
+        bid: parseFloat(item.BID1_PRICE) || 0,
+        ask: parseFloat(item.ASK1_PRICE) || 0,
+        lev: parseFloat(item.LEVERAGE) || 0,
+        delta: parseFloat(item.DELTA) || 0,
+        iv: parseFloat(item.ASK_IMP_VOL || item.IMP_VOL) || 0
+    }));
+}
+
+/**
+ * 過濾權證（極短線 / 波段）
+ */
+function filterWarrants(warrants, mode = 'swing') {
+    const passed = warrants
+        .filter(w => {
+            if (w.days <= 0 || w.ask <= 0 || w.bid <= 0 || w.lev <= 0) return false;
+
+            const spread = (w.ask - w.bid) / w.ask;
+            const dlr = spread / w.lev;
+
+            if (mode === 'short') {
+                // 極短線
+                return (
+                    w.days >= 30 &&
+                    w.days <= 120 && // 避免太長
+                    w.moneyness >= -5 && w.moneyness <= 5 &&
+                    w.delta >= 0.5 && w.delta <= 0.8 &&
+                    dlr <= 0.0015
+                );
+            } else {
+                // 波段（預設）
+                return (
+                    w.days >= 60 &&
+                    w.days <= 180 &&
+                    w.moneyness >= -10 && w.moneyness <= 5 &&
+                    w.delta >= 0.4 && w.delta <= 0.6 &&
+                    dlr <= 0.0020
+                );
+            }
+        })
+        .map(w => {
+            const spread = (w.ask - w.bid) / w.ask;
+            const dlr = spread / w.lev;
+            return {
+                ...w,
+                dlr_percent: (dlr * 100).toFixed(3) + '%',
+                score: Math.round(100 - dlr * 15000) // 調整權重，讓低 dlr 更突出
+            };
+        });
+
+    return passed.sort((a, b) => b.score - a.score).slice(0, 10);
+}
+
+// 主 API
 app.get('/api/warrants', async (req, res) => {
     const { stock, mode } = req.query;
-    if (!stock) return res.status(400).json({ error: '請輸入股票代號' });
+    if (!stock) {
+        return res.status(400).json({ error: '請提供股票代號，例如 ?stock=2330' });
+    }
 
     try {
-        const internalId = await getInternalId(stock);
-        
-        if (!internalId) {
-            // 如果連大腦裡都沒有，代表這檔股票真的太冷門，或是凱基沒發行它的權證
-            throw new Error(`找不到代號 ${stock}！原因：1. 凱基未發行該股權證 2. 該股太冷門未收錄。`);
-        }
-
-        // 拿著 ID 去抓即時報價 (這個 API 凱基不擋 Vercel)
-        const parametersOfJson = JSON.stringify({
-            "NORMAL_OR_CATTLE_BEAR": 0, "INSWRT_ISSUER_NAME": "ALL",
-            "UND_INSTR_INSNBR": internalId, 
-            "LocationPathName": "/edwebsite/views/warrantsearch/warrantsearch.aspx"
+        const raw = await fetchRealTimeWarrants(stock);
+        const filtered = filterWarrants(raw, mode);
+        res.json({
+            target: stock,
+            mode: mode || 'swing',
+            count: filtered.length,
+            data: filtered
         });
-
-        const requestData = qs.stringify({
-            serviceId: 'S0600013_GetWarrants',
-            parametersOfJson: parametersOfJson
-        });
-
-        const response = await axios.post('https://warrant.kgi.com/EDWebService/WSInterfaceSwap.asmx/GetService', requestData, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 10000
-        });
-
-        const xmlText = response.data;
-        const jsonMatch = xmlText.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
-        if (!jsonMatch || !jsonMatch[1]) throw new Error('目前查無報價，或是該標的權證已全數下市。');
-
-        const rawData = JSON.parse(jsonMatch[1]);
-        
-        const results = rawData.map(item => ({
-            symbol: item.INSTR_STKID,              
-            name: item.INSTR_NAME,                 
-            days: parseInt(item.LAST_DAYS),        
-            moneyness: parseFloat(item.IN_OUT_PERCENT), 
-            bid: parseFloat(item.BID1_PRICE || 0),      
-            ask: parseFloat(item.ASK1_PRICE || 0),      
-            lev: parseFloat(item.LEVERAGE || 0),        
-            delta: parseFloat(item.DELTA || 0)     
-        })).filter(w => {
-            if (!w.ask || w.ask <= 0 || !w.bid || w.bid <= 0 || !w.lev || w.lev <= 0) return false;
-            let dlr = ((w.ask - w.bid) / w.ask) / w.lev;
-            return mode === 'short' ? (w.days >= 30 && dlr <= 0.0015) : (w.days >= 60 && dlr <= 0.0020);
-        }).sort((a, b) => (((a.ask - a.bid) / a.ask) / a.lev) - (((b.ask - b.bid) / b.ask) / b.lev)).slice(0, 10);
-
-        res.json({ target: stock, mode, count: results.length, data: results });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+    } catch (err) {
+        console.error('API 錯誤:', err.message);
+        res.status(500).json({ error: err.message });
     }
 });
 
