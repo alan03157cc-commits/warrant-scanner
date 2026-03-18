@@ -24,49 +24,71 @@ async function fetchRealTimeWarrants(stockCode) {
         const html = response.data;
         console.log(`頁面長度：${html.length}`);
 
-        // 如果解析失敗，就用 dummy 資料（讓你看到列表）
-        console.log('解析失敗 → 使用 dummy 資料');
-        return [
-            {
-                symbol: '030205',
-                name: '台積電元大53購03 (解析失敗)',
-                days: 13,
-                moneyness: 43.14,
-                bid: 6.85,
-                ask: 6.90,
-                lev: 3.17,
-                delta: 0.5,
-                iv: 0,
-                dlr_percent: '0.15%',
-                score: 85
-            },
-            {
-                symbol: '030362',
-                name: '台積電元大54購19 (解析失敗)',
-                days: 20,
-                moneyness: 42.61,
-                bid: 4.99,
-                ask: 5.05,
-                lev: 3.39,
-                delta: 0.6,
-                iv: 0,
-                dlr_percent: '0.12%',
-                score: 88
-            },
-            {
-                symbol: '030632',
-                name: '台積電元大54購20 (解析失敗)',
-                days: 20,
-                moneyness: 11.29,
-                bid: 4.99,
-                ask: 5.05,
-                lev: 8.83,
-                delta: 0.7,
-                iv: 0,
-                dlr_percent: '0.10%',
-                score: 90
+        // 清理成純文字行
+        const cleanHtml = html.replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ').replace(/\s{2,}/g, ' ').trim();
+        const lines = cleanHtml.split('\n').map(l => l.trim()).filter(l => l);
+
+        const warrants = [];
+        for (let i = 0; i < lines.length - 1; i++) {
+            const line = lines[i];
+            const nextLine = lines[i + 1];
+
+            // 找連結行
+            if (line.includes('[') && line.includes(']') && line.includes('Info.aspx?WID=')) {
+                const symbolMatch = line.match(/\[(\d{6})\]/);
+                const symbol = symbolMatch ? symbolMatch[1] : null;
+
+                const nameMatch = line.match(/\]\s*([^\[]+)/);
+                const name = nameMatch ? nameMatch[1].trim() : '未知';
+
+                if (!symbol) continue;
+
+                // 數據行 split 空格，過濾空和 --
+                const dataParts = nextLine.split(/\s+/).filter(p => p && p !== '--');
+
+                if (dataParts.length < 8) {
+                    console.log(`數據行太短，跳過：${nextLine.substring(0, 100)}...`);
+                    continue;
+                }
+
+                // 位置調整（根據實際頁面）
+                // 常見：成交價, 漲跌, 漲跌%, 成交量, 履約價, 行使比例, 剩餘天數, 價內外, 價差比, 實質槓桿
+                const days = parseInt(dataParts[6]) || parseInt(dataParts[5]) || 0; // 彈性取
+                const moneynessStr = dataParts.find(p => p.includes('價內') || p.includes('價外')) || '';
+                let moneyness = parseFloat(moneynessStr.replace(/[^0-9.-]/g, '')) || 0;
+                if (moneynessStr.includes('價外')) moneyness = -moneyness;
+
+                const levIndex = dataParts.findIndex(p => p.includes('槓桿')) + 1 || 9;
+                const lev = parseFloat(dataParts[levIndex]) || parseFloat(dataParts[9]) || 0;
+
+                const price = parseFloat(dataParts[0]) || 1.0;
+                const bid = price * 0.98;
+                const ask = price * 1.02;
+
+                if (days > 0 && lev > 0) {
+                    warrants.push({
+                        symbol,
+                        name,
+                        days,
+                        moneyness,
+                        bid,
+                        ask,
+                        lev,
+                        delta: 0,
+                        iv: 0
+                    });
+                    console.log(`成功解析：${symbol} ${name} | 天數:${days} | 價內外:${moneyness} | 槓桿:${lev}`);
+                } else {
+                    console.log(`無效筆：${symbol} 天數:${days} 槓桿:${lev}`);
+                }
+
+                i++; // 跳過數據行
             }
-        ];
+        }
+
+        console.log(`總共解析到 ${warrants.length} 筆權證`);
+
+        return warrants;
     } catch (err) {
         console.error('抓取失敗：', err.message);
         return [];
@@ -75,7 +97,32 @@ async function fetchRealTimeWarrants(stockCode) {
 
 function filterWarrants(warrants, mode = 'swing') {
     console.log(`過濾模式：${mode}，原始筆數：${warrants.length}`);
-    return warrants; // 臨時版直接全部回傳
+
+    const passed = warrants
+        .filter(w => w.days > 0 && w.lev > 0)
+        .map(w => {
+            const mid = (w.bid + w.ask) / 2 || 1;
+            const spread = Math.abs(w.ask - w.bid) / mid;
+            const dlr = spread / w.lev;
+            return {
+                ...w,
+                dlr_percent: dlr.toFixed(4),
+                score: Math.round(100 - dlr * 10000)
+            };
+        })
+        .filter(w => {
+            // 暫時放寬，讓資料出來
+            if (mode === 'short') {
+                return w.days >= 5 && w.moneyness >= -100 && w.moneyness <= 100 && parseFloat(w.dlr_percent) <= 1.0;
+            } else {
+                return w.days >= 10 && w.moneyness >= -100 && w.moneyness <= 100 && parseFloat(w.dlr_percent) <= 1.0;
+            }
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10);
+
+    console.log(`過濾後筆數：${passed.length}`);
+    return passed;
 }
 
 app.get('/api/warrants', async (req, res) => {
@@ -85,14 +132,16 @@ app.get('/api/warrants', async (req, res) => {
     try {
         const raw = await fetchRealTimeWarrants(stock);
         const filtered = filterWarrants(raw, mode || 'swing');
+
         res.json({
             target: stock,
             mode: mode || 'swing',
             count: filtered.length,
             data: filtered,
-            note: '這是臨時 dummy 資料（解析失敗），之後會換群益版'
+            debug: raw.length > 0 ? '成功解析到資料' : '解析失敗（結構不匹配）'
         });
     } catch (err) {
+        console.error('API 錯誤：', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -101,5 +150,5 @@ module.exports = app;
 
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => console.log(`本地跑在 http://localhost:${PORT}`));
+    app.listen(PORT, () => console.log(`本地伺服器：http://localhost:${PORT}`));
 }
