@@ -24,61 +24,60 @@ async function fetchRealTimeWarrants(stockCode) {
         const html = response.data;
         console.log(`頁面長度：${html.length}`);
 
-        // 步驟1: 切割成行級別（找 <tr> 內容）
-        const rowMatches = html.match(/<tr[^>]*>([\s\S]*?)<\/tr>/gi) || [];
+        // 把 html 轉成行陣列（移除標籤後的純文字）
+        const cleanHtml = html.replace(/<[^>]+>/g, '\n').replace(/\s+/g, ' ').trim();
+        const lines = cleanHtml.split('\n').map(l => l.trim()).filter(l => l);
+
         const warrants = [];
+        for (let i = 0; i < lines.length - 1; i++) {
+            const line = lines[i];
+            const nextLine = lines[i + 1];
 
-        for (const row of rowMatches) {
-            // 找連結
-            const linkMatch = row.match(/href="Info\.aspx\?WID=(\d{6})"[^>]*>([^<]+)<\/a>/i);
-            if (!linkMatch) continue;
+            // 找連結行：包含 [數字] 和 Info.aspx?WID
+            if (line.includes('[ ') && line.includes('Info.aspx?WID=')) {
+                // 取出 symbol 和 name
+                const symbolMatch = line.match(/\[(\d{6})\]/);
+                const symbol = symbolMatch ? symbolMatch[1] : null;
 
-            const symbol = linkMatch[1];
-            let name = linkMatch[2].trim();
+                const nameMatch = line.match(/\]\s*([^\[]+)/);
+                const name = nameMatch ? nameMatch[1].trim() : '未知';
 
-            // 清理 name
-            name = name.replace(/^\[|\]$/g, '').trim();
+                if (!symbol) continue;
 
-            // 從整行文字提取關鍵欄位（移除標籤後）
-            const cleanRow = row.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+                // 下一行是數據：split 空格
+                const dataParts = nextLine.split(/\s+/).filter(p => p && p !== '--');
 
-            // 剩餘天數：找靠近 "剩餘" 或純數字
-            const daysMatch = cleanRow.match(/(\d{1,4})\s*(?:剩餘|日|天)/i) || cleanRow.match(/\b(\d{1,4})\b/);
-            const days = daysMatch ? parseInt(daysMatch[1]) : 0;
+                if (dataParts.length < 10) continue;
 
-            // 價內外：數字 + 價內/價外
-            const moneynessMatch = cleanRow.match(/([\d.]+)\s*(價內|價外)/i);
-            let moneyness = 0;
-            if (moneynessMatch) {
-                moneyness = parseFloat(moneynessMatch[1]);
-                if (moneynessMatch[2].includes('價外')) moneyness = -moneyness;
-            }
+                // 固定位置（根據頁面樣本）
+                const days = parseInt(dataParts[6]) || 0; // index 6: 剩餘日
+                const moneynessStr = dataParts[7] || ''; // index 7: 價內外
+                let moneyness = parseFloat(moneynessStr.replace(/[^0-9.-]/g, '')) || 0;
+                if (moneynessStr.includes('價外')) moneyness = -moneyness;
 
-            // 實質槓桿：實質槓桿 + 數字
-            const levMatch = cleanRow.match(/實質\s*槓桿\s*([\d.]+)/i) || cleanRow.match(/槓桿\s*([\d.]+)/i);
-            const lev = levMatch ? parseFloat(levMatch[1]) : 0;
+                const lev = parseFloat(dataParts[9]) || 0; // index 9: 實質槓桿
 
-            // 估計價格（測試用）
-            const bid = 1.0;
-            const ask = 1.05;
+                const bid = parseFloat(dataParts[0]) * 0.98 || 0;
+                const ask = parseFloat(dataParts[0]) * 1.02 || 0;
 
-            if (days > 0 && lev > 0) {
-                warrants.push({
-                    symbol,
-                    name,
-                    days,
-                    moneyness,
-                    bid,
-                    ask,
-                    lev,
-                    delta: 0,
-                    iv: 0
-                });
-                console.log(`成功抓到：${symbol} ${name} | 天數:${days} | 價內外:${moneyness} | 槓桿:${lev}`);
+                if (days > 0 && lev > 0) {
+                    warrants.push({
+                        symbol,
+                        name,
+                        days,
+                        moneyness,
+                        bid,
+                        ask,
+                        lev,
+                        delta: 0,
+                        iv: 0
+                    });
+                    console.log(`成功解析：${symbol} ${name} | 天數:${days} | 價內外:${moneyness} | 槓桿:${lev}`);
+                }
             }
         }
 
-        console.log(`總共抓到 ${warrants.length} 筆權證`);
+        console.log(`總共解析到 ${warrants.length} 筆權證`);
 
         return warrants;
     } catch (err) {
@@ -103,11 +102,11 @@ function filterWarrants(warrants, mode = 'swing') {
             };
         })
         .filter(w => {
-            // 測試放寬，讓 2330 至少顯示一些
+            // 測試超寬鬆，讓 2330 顯示
             if (mode === 'short') {
-                return w.days >= 10 && w.moneyness >= -100 && w.moneyness <= 100 && parseFloat(w.dlr_percent) <= 1.0;
+                return w.days >= 5 && w.moneyness >= -200 && w.moneyness <= 200 && parseFloat(w.dlr_percent) <= 2.0;
             } else {
-                return w.days >= 20 && w.moneyness >= -100 && w.moneyness <= 100 && parseFloat(w.dlr_percent) <= 1.0;
+                return w.days >= 10 && w.moneyness >= -200 && w.moneyness <= 200 && parseFloat(w.dlr_percent) <= 2.0;
             }
         })
         .sort((a, b) => b.score - a.score)
@@ -130,9 +129,9 @@ app.get('/api/warrants', async (req, res) => {
             mode: mode || 'swing',
             count: filtered.length,
             data: filtered,
-            debugInfo: {
+            debug: {
                 rawCount: raw.length,
-                message: raw.length > 0 ? '有原始資料，但過濾沒通過' : '無原始資料（解析失敗或元大無此權證）'
+                msg: raw.length > 0 ? '有資料但過濾沒通過（門檻太嚴）' : '解析失敗或元大無資料'
             }
         });
     } catch (err) {
@@ -144,7 +143,5 @@ module.exports = app;
 
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
-    app.listen(PORT, () => {
-        console.log(`本地伺服器運行於 http://localhost:${PORT}`);
-    });
+    app.listen(PORT, () => console.log(`本地跑在 http://localhost:${PORT}`));
 }
