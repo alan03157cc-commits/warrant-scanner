@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 記憶體快取：儲存全市場代碼對應表，避免重複抓取浪費時間
+// 記憶體快取：儲存全市場代碼對應表，避免重複抓取
 let internalCodeCache = null;
 
 /**
@@ -17,7 +17,7 @@ let internalCodeCache = null;
 async function getInternalId(targetStock) {
     try {
         if (!internalCodeCache) {
-            console.log("正在初始化全市場代碼對應表...");
+            console.log("正在從凱基初始化全市場代碼對應表...");
             const response = await axios.post('https://warrant.kgi.com/edwebsite/api/WarrantSearch/GetUnderlyingList', 
             {}, {
                 headers: { 
@@ -25,17 +25,16 @@ async function getInternalId(targetStock) {
                     'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx'
                 }
             });
-            internalCodeCache = response.data; // 儲存到全域變數
+            internalCodeCache = response.data;
         }
 
-        // 在清單中搜尋使用者輸入的股票代號 (例如 2330)
-        // 凱基欄位名：UnderlyingId (代號), UnderlyingInsnbr (內部ID)
+        // 搜尋匹配的代號
         const match = internalCodeCache.find(item => item.UnderlyingId.trim() === targetStock.trim());
         
         if (match) {
             return match.UnderlyingInsnbr;
         } else {
-            throw new Error(`找不到股票代號 ${targetStock}，請確認該股是否有發行權證。`);
+            throw new Error(`找不到代號 ${targetStock}，請確認該股是否有權證。`);
         }
     } catch (error) {
         console.error("對應表轉換失敗:", error.message);
@@ -44,11 +43,10 @@ async function getInternalId(targetStock) {
 }
 
 /**
- * 核心抓取引擎：向凱基 API 請求即時權證資料
+ * 核心抓取引擎：請求即時權證資料
  */
 async function fetchRealTimeWarrants(stockCode) {
     try {
-        // 1. 先換取內部 ID (例如 2492 -> 11472)
         const internalId = await getInternalId(stockCode);
 
         const apiUrl = 'https://warrant.kgi.com/EDWebService/WSInterfaceSwap.asmx/GetService';
@@ -76,15 +74,13 @@ async function fetchRealTimeWarrants(stockCode) {
             }
         });
 
-        // 2. 剖析 XML 取得 JSON
         const xmlText = response.data;
         const jsonMatch = xmlText.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
-        if (!jsonMatch || !jsonMatch[1]) throw new Error('解析 XML 失敗或該標的目前無資料');
+        if (!jsonMatch || !jsonMatch[1]) throw new Error('解析 XML 失敗或目前無權證資料');
 
         const rawData = JSON.parse(jsonMatch[1]);
         const formattedWarrants = [];
 
-        // 3. 欄位對應轉換 (根據你提供的最新 JSON 結構)
         for (let item of rawData) {
             formattedWarrants.push({
                 symbol: item.INSTR_STKID,              
@@ -111,20 +107,17 @@ function filterWarrants(warrants, mode) {
     let passed = [];
 
     warrants.forEach(w => {
-        // 基本安全檢查
         if (!w.ask || w.ask <= 0 || !w.bid || w.bid <= 0 || !w.lev || w.lev <= 0) return;
 
-        // 計算差槓比 (Spread-to-Leverage Ratio)
         let dlr = ((w.ask - w.bid) / w.ask) / w.lev;
 
+        // 條件設定 (可根據你的喜好微調)
         if (mode === 'short') {
-            // 極短線標準
             if (w.days < 30) return;
             if (w.moneyness < -5 || w.moneyness > 5) return;
             if (w.delta < 0.5 || w.delta > 0.8) return;
             if (dlr > 0.0015) return; 
         } else if (mode === 'swing') {
-            // 波段留倉標準
             if (w.days < 60) return;
             if (w.moneyness < -10 || w.moneyness > 5) return;
             if (w.delta < 0.4 || w.delta > 0.6) return;
@@ -151,10 +144,9 @@ app.get('/api/warrants', async (req, res) => {
         const results = filterWarrants(rawWarrants, mode || 'swing');
         res.json({ target: stock, mode, count: results.length, data: results });
     } catch (error) {
-        // 將錯誤訊息傳回前端顯示
         res.status(500).json({ error: error.message });
     }
 });
 
-// Vercel 專用輸出
+// 重要：Vercel 專用輸出，請確保沒有 app.listen()
 module.exports = app;
