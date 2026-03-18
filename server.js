@@ -15,7 +15,7 @@ async function fetchRealTimeWarrants(stockCode) {
         const url = 'https://extweb.capital.com.tw/Extproduct/Program/Warrant/IndexWarrant/WarrantSearch.html';
         const postData = new URLSearchParams({
             'Underlying': stockCode.trim(),
-            'WarrantType': 'ALL', // ALL = 認購+認售
+            'WarrantType': 'ALL',
             'Issuer': 'ALL',
             'LastDaysFrom': '',
             'LastDaysTo': '',
