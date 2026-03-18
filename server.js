@@ -22,64 +22,60 @@ async function fetchRealTimeWarrants(stockCode) {
         });
 
         const html = response.data;
-        console.log(`頁面長度：${html.length}`);
+        console.log(`頁面取得成功，長度：${html.length}`);
 
-        // 清理成純文字 + 行陣列
+        // 清理成純文字 + 行
         const clean = html.replace(/<[^>]+>/g, '\n').replace(/&nbsp;/g, ' ').replace(/\s{2,}/g, ' ').trim();
-        const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 5);
+        const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 20);
 
         const warrants = [];
-        let i = 0;
-        while (i < lines.length) {
+        for (let i = 0; i < lines.length - 1; i++) {
             const line = lines[i];
+            const nextLine = lines[i + 1];
 
             // 找權證連結行
-            if (line.match(/\[\d{6}\]/) && line.includes('Info.aspx?WID=')) {
+            if (line.match(/\[\d{6}\]/)) {
                 const symbolMatch = line.match(/\[(\d{6})\]/);
                 const symbol = symbolMatch ? symbolMatch[1] : null;
 
                 const name = line.replace(/^\[\d{6}\]\s*/, '').trim();
 
-                if (!symbol) { i++; continue; }
+                if (!symbol) continue;
 
-                // 找下一筆數據行（可能下一行或再下一行）
-                let dataLine = '';
-                for (let j = 1; j <= 3 && i + j < lines.length; j++) {
-                    const candidate = lines[i + j];
-                    if (candidate.match(/[\d.-]+/) && candidate.length > 20) {
-                        dataLine = candidate;
+                // 數據行 split
+                const parts = nextLine.split(/\s+/).filter(p => p && p !== '--' && p !== '');
+
+                if (parts.length < 8) {
+                    console.log(`數據行太短，跳過：${nextLine.substring(0, 80)}...`);
+                    continue;
+                }
+
+                console.log(`找到數據行 for ${symbol}: ${parts.join(' | ')}`);
+
+                // 彈性取剩餘天數（找 1~365 的純數字）
+                let days = 0;
+                for (const p of parts) {
+                    const num = parseInt(p);
+                    if (!isNaN(num) && num > 0 && num < 365) {
+                        days = num;
                         break;
                     }
                 }
 
-                if (!dataLine) {
-                    console.log(`找不到數據行 for ${symbol}`);
-                    i++;
-                    continue;
-                }
-
-                console.log(`找到數據行 for ${symbol}: ${dataLine.substring(0, 150)}...`);
-
-                // split 空格，過濾空和 --
-                const parts = dataLine.split(/\s+/).filter(p => p && p !== '--');
-
-                if (parts.length < 8) {
-                    i++;
-                    continue;
-                }
-
-                // 位置彈性取（剩餘天數通常在 6-7 位）
-                const daysIndex = parts.findIndex(p => /^\d{1,3}$/.test(p) && parseInt(p) < 365);
-                const days = daysIndex >= 0 ? parseInt(parts[daysIndex]) : 0;
-
-                // 價內外：找包含「價內」「價外」的字串
+                // 價內外：找包含價內/價外的字串
                 const moneynessPart = parts.find(p => p.includes('價內') || p.includes('價外')) || '';
                 let moneyness = parseFloat(moneynessPart.replace(/[^0-9.-]/g, '')) || 0;
                 if (moneynessPart.includes('價外')) moneyness = -moneyness;
 
-                // 槓桿：找數字在 1-20 範圍
-                const levPart = parts.find(p => /^\d+\.?\d*$/.test(p) && parseFloat(p) >= 1 && parseFloat(p) <= 20) || '';
-                const lev = parseFloat(levPart) || 0;
+                // 實質槓桿：找合理範圍數字 (1~30)
+                let lev = 0;
+                for (const p of parts) {
+                    const num = parseFloat(p);
+                    if (!isNaN(num) && num > 1 && num < 30) {
+                        lev = num;
+                        break;
+                    }
+                }
 
                 const price = parseFloat(parts[0]) || 1.0;
                 const bid = price * 0.98;
@@ -102,9 +98,7 @@ async function fetchRealTimeWarrants(stockCode) {
                     console.log(`無效筆：${symbol} 天數:${days} 槓桿:${lev}`);
                 }
 
-                i += 2; // 跳過數據行
-            } else {
-                i++;
+                i++; // 跳過數據行
             }
         }
 
@@ -133,7 +127,7 @@ function filterWarrants(warrants, mode = 'swing') {
             };
         })
         .filter(w => {
-            // 暫時超寬鬆，讓資料先顯示
+            // 暫時極寬鬆，讓資料先出來
             return w.days >= 5 && parseFloat(w.dlr_percent) <= 3.0;
         })
         .sort((a, b) => b.score - a.score)
@@ -156,9 +150,13 @@ app.get('/api/warrants', async (req, res) => {
             mode: mode || 'swing',
             count: filtered.length,
             data: filtered,
-            debug: raw.length > 0 ? '成功解析到資料' : '解析失敗（元大頁面格式不匹配）'
+            debug: {
+                rawCount: raw.length,
+                msg: raw.length > 0 ? '成功抓到真實資料' : '解析失敗（元大頁面格式變了或無資料）'
+            }
         });
     } catch (err) {
+        console.error('API 錯誤：', err);
         res.status(500).json({ error: err.message });
     }
 });
