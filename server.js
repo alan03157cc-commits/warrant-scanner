@@ -1,486 +1,70 @@
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>權證即時過濾系統</title>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Noto+Sans+TC:wght@300;400;700&display=swap');
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const path = require('path');
 
-  :root {
-    --bg: #0a0e0a;
-    --surface: #111611;
-    --border: #1e2e1e;
-    --accent: #00ff41;
-    --accent2: #39ff14;
-    --warn: #ffb800;
-    --bad: #ff3131;
-    --text: #c8ffc8;
-    --muted: #4a6b4a;
-    --header-h: 60px;
-  }
+const app = express();
+app.use(cors());
+app.use(express.static(path.join(__dirname, 'public')));
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+const HEADERS = { 'User-Agent': 'Mozilla/5.0' };
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Noto Sans TC', sans-serif;
-    min-height: 100vh;
-    overflow-x: hidden;
-  }
-
-  /* scanline overlay */
-  body::before {
-    content: '';
-    position: fixed; inset: 0;
-    background: repeating-linear-gradient(
-      0deg, transparent, transparent 2px,
-      rgba(0,255,65,0.015) 2px, rgba(0,255,65,0.015) 4px
-    );
-    pointer-events: none;
-    z-index: 1000;
-  }
-
-  header {
-    height: var(--header-h);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    position: sticky; top: 0; z-index: 100;
-  }
-
-  .logo {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 1.1rem;
-    letter-spacing: .25em;
-    color: var(--accent);
-    text-shadow: 0 0 12px var(--accent);
-  }
-
-  .logo span { color: var(--muted); font-size: .8em; }
-
-  /* controls */
-  .controls {
-    max-width: 760px;
-    margin: 36px auto 0;
-    padding: 0 20px;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-
-  .input-wrap {
-    position: relative;
-    flex: 1; min-width: 160px;
-  }
-
-  .input-wrap::before {
-    content: '▶';
-    position: absolute; left: 12px; top: 50%;
-    transform: translateY(-50%);
-    color: var(--accent);
-    font-size: .75rem;
-    pointer-events: none;
-  }
-
-  input[type="text"] {
-    width: 100%;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--accent);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 1.1rem;
-    padding: 10px 14px 10px 32px;
-    outline: none;
-    transition: border-color .2s, box-shadow .2s;
-    letter-spacing: .1em;
-  }
-
-  input[type="text"]:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(0,255,65,.15), inset 0 0 20px rgba(0,255,65,.04);
-  }
-
-  .btn {
-    background: transparent;
-    border: 1px solid var(--accent);
-    color: var(--accent);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: .85rem;
-    letter-spacing: .15em;
-    padding: 10px 22px;
-    cursor: pointer;
-    transition: background .15s, box-shadow .15s, color .15s;
-    white-space: nowrap;
-  }
-
-  .btn:hover, .btn.active {
-    background: var(--accent);
-    color: var(--bg);
-    box-shadow: 0 0 18px rgba(0,255,65,.4);
-  }
-
-  .btn.active { font-weight: 700; }
-
-  .btn-warn {
-    border-color: var(--warn);
-    color: var(--warn);
-  }
-  .btn-warn:hover, .btn-warn.active {
-    background: var(--warn);
-    color: var(--bg);
-    box-shadow: 0 0 18px rgba(255,184,0,.4);
-  }
-
-  /* status bar */
-  .status-bar {
-    max-width: 760px;
-    margin: 18px auto 0;
-    padding: 0 20px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: .75rem;
-    color: var(--muted);
-    min-height: 20px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .status-bar .dot {
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--muted);
-    animation: blink 1s infinite;
-  }
-
-  .status-bar.loading .dot { background: var(--accent); }
-  .status-bar.ok .dot { background: var(--accent); animation: none; }
-  .status-bar.err .dot { background: var(--bad); animation: none; }
-
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
-
-  /* table */
-  .table-wrap {
-    max-width: 960px;
-    margin: 24px auto 60px;
-    padding: 0 20px;
-    overflow-x: auto;
-  }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: .82rem;
-  }
-
-  thead tr {
-    border-bottom: 1px solid var(--accent);
-  }
-
-  th {
-    font-family: 'Share Tech Mono', monospace;
-    color: var(--accent);
-    font-weight: 400;
-    letter-spacing: .08em;
-    padding: 8px 12px;
-    text-align: right;
-    white-space: nowrap;
-    font-size: .75rem;
-  }
-
-  th:first-child { text-align: left; }
-
-  tbody tr {
-    border-bottom: 1px solid var(--border);
-    transition: background .1s;
-  }
-
-  tbody tr:hover { background: rgba(0,255,65,.04); }
-
-  td {
-    padding: 9px 12px;
-    text-align: right;
-    white-space: nowrap;
-  }
-
-  td:first-child { text-align: left; }
-
-  .sym {
-    font-family: 'Share Tech Mono', monospace;
-    color: var(--accent2);
-    font-size: .9rem;
-  }
-
-  .name { color: var(--muted); font-size: .75rem; margin-left: 6px; }
-
-  .score-cell {
-    font-family: 'Share Tech Mono', monospace;
-    font-weight: 700;
-  }
-
-  .score-hi { color: var(--accent); text-shadow: 0 0 8px var(--accent); }
-  .score-mid { color: var(--warn); }
-  .score-lo { color: var(--bad); }
-
-  .moneyness-pos { color: var(--accent); }
-  .moneyness-neg { color: var(--bad); }
-
-  .no-data {
-    max-width: 760px;
-    margin: 60px auto;
-    padding: 0 20px;
-    font-family: 'Share Tech Mono', monospace;
-    color: var(--muted);
-    font-size: .85rem;
-    text-align: center;
-    letter-spacing: .1em;
-  }
-
-  /* rank badge */
-  .rank {
-    display: inline-block;
-    width: 20px; height: 20px;
-    line-height: 20px;
-    text-align: center;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: .7rem;
-    border: 1px solid var(--border);
-    color: var(--muted);
-  }
-
-  /* tag */
-  .tag {
-    display: inline-block;
-    padding: 1px 6px;
-    font-size: .65rem;
-    font-family: 'Share Tech Mono', monospace;
-    border: 1px solid currentColor;
-    margin-left: 4px;
-    vertical-align: middle;
-  }
-
-  .tag-call { color: #ff6b6b; }
-  .tag-put  { color: #6bceff; }
-
-  .source-note {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 0 20px 12px;
-    font-size: .7rem;
-    color: var(--muted);
-    font-family: 'Share Tech Mono', monospace;
-  }
-</style>
-</head>
-<body>
-
-<header>
-  <div class="logo">WARRANT<span>_</span>SCANNER <span>// TWSE LIVE</span></div>
-</header>
-
-<div class="controls">
-  <div class="input-wrap">
-    <input type="text" id="stockInput" placeholder="輸入股票代號，例：2330" value="2330" maxlength="6">
-  </div>
-  <button class="btn active" id="btnSwing" onclick="setMode('swing')">波段</button>
-  <button class="btn btn-warn" id="btnShort" onclick="setMode('short')">極短線</button>
-  <button class="btn" id="btnSearch" onclick="doSearch()">查詢</button>
-</div>
-
-<div class="status-bar" id="statusBar">
-  <div class="dot"></div>
-  <span id="statusText">請輸入股票代號後按查詢</span>
-</div>
-
-<div id="tableArea"></div>
-
-<div class="source-note" id="sourceNote"></div>
-
-<script>
-let currentMode = 'swing';
-
-function setMode(m) {
-  currentMode = m;
-  document.getElementById('btnSwing').classList.toggle('active', m === 'swing');
-  document.getElementById('btnShort').classList.toggle('active', m === 'short');
-}
-
-function setStatus(type, msg) {
-  const bar = document.getElementById('statusBar');
-  bar.className = 'status-bar ' + type;
-  document.getElementById('statusText').textContent = msg;
-}
-
-document.getElementById('stockInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doSearch();
-});
-
-async function doSearch() {
-  const stock = document.getElementById('stockInput').value.trim();
-  if (!stock) return;
-
-  setStatus('loading', `正在從 TWSE 抓取 ${stock} 的權證資料...`);
-  document.getElementById('tableArea').innerHTML = '';
-  document.getElementById('sourceNote').textContent = '';
-
-  try {
-    // TWSE 上市認購/認售權證查詢
-    // 使用 TWSE OpenAPI: /exchangeReport/TWTAUU (認購) + TWTBUU (認售)
-    const [callData, putData] = await Promise.all([
-      fetchTWSEWarrants(stock, 'C'),
-      fetchTWSEWarrants(stock, 'P')
-    ]);
-
-    const all = [...callData, ...putData];
-    console.log(`TWSE 取得 ${all.length} 筆原始資料`);
-
-    if (all.length === 0) {
-      setStatus('err', `找不到 ${stock} 的權證資料（可能是店頭股或代號有誤）`);
-      document.getElementById('tableArea').innerHTML = '<div class="no-data">[ NO_DATA ] 該標的無上市權證</div>';
-      return;
-    }
-
-    const filtered = filterWarrants(all, currentMode);
-    renderTable(filtered, stock);
-
-    const src = `// 資料來源：台灣證券交易所 TWSE OpenAPI｜共 ${all.length} 筆原始資料，過濾後 ${filtered.length} 筆`;
-    document.getElementById('sourceNote').textContent = src;
-    setStatus('ok', `查詢完成：${stock}｜共 ${all.length} 筆 → 過濾後 ${filtered.length} 筆`);
-
-  } catch (err) {
-    console.error(err);
-    setStatus('err', '抓取失敗：' + err.message);
-    document.getElementById('tableArea').innerHTML = `<div class="no-data">[ ERROR ] ${err.message}</div>`;
-  }
-}
-
-async function fetchTWSEWarrants(stockNo, type) {
-  // TWSE 認購/認售權證每日行情
-  // endpoint: https://www.twse.com.tw/rwd/zh/warrant/TWTAUU?response=json&stockNo=2330&type=C
-  const typeCode = type === 'C' ? 'C' : 'P';
-  const url = `https://www.twse.com.tw/rwd/zh/warrant/TWTAUU?response=json&stockNo=${stockNo}&type=${typeCode}`;
-
-  const resp = await fetch(url, {
-    headers: { 'Accept': 'application/json' }
+async function fetchTWSE(stockNo, type) {
+  const res = await axios.get('https://www.twse.com.tw/rwd/zh/warrant/TWTAUU', {
+    params: { response: 'json', stockNo, type },
+    headers: HEADERS,
+    timeout: 12000
   });
-
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
-  const json = await resp.json();
-  console.log('TWSE response status:', json.stat, '筆數:', json.data?.length ?? 0);
-
-  if (!json.data || json.data.length === 0) return [];
-
-  // 欄位順序（依 TWSE TWTAUU 格式）:
-  // 0:代號 1:名稱 2:履約價 3:到期日 4:剩餘天數 5:發行量(仟) 6:流通在外(仟)
-  // 7:買進 8:賣出 9:成交 10:漲跌 11:開盤 12:最高 13:最低 14:成交量
-  // 15:價內外% 16:Delta 17:隱波(%) 18:實質槓桿 19:流通比(%)
-
-  return json.data.map(row => {
-    const days     = parseInt(row[4]) || 0;
-    const moneyness= parseFloat(row[15]) || 0;
-    const lev      = parseFloat(row[18]) || 0;
-    const delta    = parseFloat(row[16]) || 0;
-    const iv       = parseFloat(row[17]) || 0;
-    const bid      = parseFloat(row[7]?.replace(/,/g,'')) || 0;
-    const ask      = parseFloat(row[8]?.replace(/,/g,'')) || 0;
-    const price    = parseFloat(row[9]?.replace(/,/g,'')) || 0;
-    const expire   = row[3] || '';
-    const strike   = parseFloat(row[2]?.replace(/,/g,'')) || 0;
-
-    return {
-      symbol: row[0],
-      name: row[1],
-      type: typeCode,
-      days, moneyness, lev, delta, iv,
-      bid, ask, price, expire, strike
-    };
-  });
+  const rows = res.data?.data || [];
+  return rows.map(row => ({
+    symbol:    row[0],
+    name:      row[1],
+    type,
+    strike:    parseFloat(row[2]?.replace(/,/g,'')) || 0,
+    expire:    row[3],
+    days:      parseInt(row[4]) || 0,
+    bid:       parseFloat(row[7]?.replace(/,/g,'')) || 0,
+    ask:       parseFloat(row[8]?.replace(/,/g,'')) || 0,
+    price:     parseFloat(row[9]?.replace(/,/g,'')) || 0,
+    moneyness: parseFloat(row[15]) || 0,
+    delta:     parseFloat(row[16]) || 0,
+    iv:        parseFloat(row[17]) || 0,
+    lev:       parseFloat(row[18]) || 0,
+  }));
 }
 
 function filterWarrants(warrants, mode) {
   const minDays = mode === 'short' ? 10 : 20;
-
   return warrants
-    .filter(w => {
-      if (w.days < minDays) return false;
-      if (w.moneyness < -50 || w.moneyness > 50) return false;
-      if (w.lev <= 0) return false;
-      return true;
-    })
+    .filter(w => w.days >= minDays && w.lev > 0 && Math.abs(w.moneyness) <= 50)
     .map(w => {
-      const mid = w.bid > 0 && w.ask > 0 ? (w.bid + w.ask) / 2 : (w.price || 1);
+      const mid = (w.bid > 0 && w.ask > 0) ? (w.bid + w.ask) / 2 : (w.price || 1);
       const spread = (w.bid > 0 && w.ask > 0) ? Math.abs(w.ask - w.bid) / mid : 0.5;
-      const dlr = w.lev > 0 ? spread / w.lev : 1;
-      const score = Math.max(0, Math.round(100 - dlr * 10000));
-      return { ...w, dlr_pct: (dlr * 100).toFixed(3), score };
+      const dlr = spread / w.lev;
+      return { ...w, dlr_pct: (dlr * 100).toFixed(3), score: Math.max(0, Math.round(100 - dlr * 10000)) };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 15);
 }
 
-function renderTable(data, stock) {
-  if (data.length === 0) {
-    document.getElementById('tableArea').innerHTML =
-      `<div class="no-data">[ NO_MATCH ] ${stock} 無符合條件的權證<br><br>` +
-      `<small>嘗試調整條件或查詢其他標的</small></div>`;
-    return;
+app.get('/api/warrants', async (req, res) => {
+  const { stock, mode } = req.query;
+  if (!stock) return res.status(400).json({ error: '請輸入股票代號' });
+  try {
+    const [callData, putData] = await Promise.all([
+      fetchTWSE(stock, 'C'),
+      fetchTWSE(stock, 'P')
+    ]);
+    const raw = [...callData, ...putData];
+    const filtered = filterWarrants(raw, mode || 'swing');
+    res.json({ target: stock, mode: mode || 'swing', rawCount: raw.length, count: filtered.length, data: filtered });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
+});
 
-  const rows = data.map((w, i) => {
-    const scoreClass = w.score >= 70 ? 'score-hi' : w.score >= 40 ? 'score-mid' : 'score-lo';
-    const mClass = w.moneyness >= 0 ? 'moneyness-pos' : 'moneyness-neg';
-    const mSign  = w.moneyness >= 0 ? '+' : '';
-    const typeTag = w.type === 'C'
-      ? '<span class="tag tag-call">CALL</span>'
-      : '<span class="tag tag-put">PUT</span>';
-
-    const bidAsk = w.bid > 0 ? `${w.bid} / ${w.ask}` : `${w.price || '-'}`;
-
-    return `<tr>
-      <td>
-        <span class="rank">${i+1}</span>
-        <span class="sym">${w.symbol}</span>${typeTag}
-        <span class="name">${w.name}</span>
-      </td>
-      <td>${w.days}</td>
-      <td class="${mClass}">${mSign}${w.moneyness.toFixed(1)}%</td>
-      <td>${w.lev > 0 ? w.lev.toFixed(1) : '-'}</td>
-      <td>${w.delta > 0 ? w.delta.toFixed(2) : '-'}</td>
-      <td>${w.iv > 0 ? w.iv.toFixed(1) + '%' : '-'}</td>
-      <td>${bidAsk}</td>
-      <td>${w.dlr_pct}%</td>
-      <td class="score-cell ${scoreClass}">${w.score}</td>
-    </tr>`;
-  }).join('');
-
-  document.getElementById('tableArea').innerHTML = `
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>代號 / 名稱</th>
-            <th>剩餘天</th>
-            <th>價內外</th>
-            <th>實槓桿</th>
-            <th>Delta</th>
-            <th>隱波</th>
-            <th>買/賣價</th>
-            <th>DLR%</th>
-            <th>評分</th>
-          </tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+module.exports = app;
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`http://localhost:${PORT}`));
 }
-
-// 預設查詢
-doSearch();
-</script>
-</body>
-</html>
