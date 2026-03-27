@@ -2,48 +2,92 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const axios = require('axios');
+const qs = require('qs');
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// TWSE 代理引擎：支援輸入任何代號
+// 凱基內部代號對應表 (2026 最新熱門標的)
+const stockCodeMap = {
+    '2330': '11467', '2317': '11475', '2454': '11478', '2492': '11472', 
+    '2303': '11465', '2603': '11487', '2609': '11488', '2610': '11489',
+    '2615': '11490', '2618': '11491', '2881': '11503', '2882': '11504',
+    '2886': '11508', '0050': '11460', '0056': '11476', '2382': '11484',
+    '2308': '11470', '2379': '11483', '3034': '11506', '3711': '11515',
+    '3037': '11507', '2357': '11466', '2376': '11482', '2408': '11474',
+    '3231': '11512', '4938': '11528', '2344': '11471', '2409': '11477',
+    '3481': '11514', '6415': '11542', '3661': '11524'
+};
+
+// API 路由：支援輸入代號或名稱
 app.get('/api/warrants', async (req, res) => {
     const { stock, type } = req.query;
-    if (!stock) return res.status(400).json({ error: '缺少標標代號' });
+    if (!stock) return res.status(400).json({ error: '缺少標的代號' });
 
-    // 決定 TWSE API 路徑 (認購 C: TWTAUU, 認售 P: TWTBUU)
-    const apiPath = type === 'P' ? 'TWTBUU' : 'TWTAUU';
+    // 從 Mapping 獲取 ID (若輸入代號不在表中，嘗試模糊匹配名稱)
+    let internalId = stockCodeMap[stock];
     
-    // 使用核心 API 端點，減少 RWD 層次的阻擋
-    const apiUrl = `https://www.twse.com.tw/exchangeReport/${apiPath}?response=json&stockNo=${stock}`;
+    if (!internalId) {
+        return res.status(404).json({ error: `目前系統尚未建立 ${stock} 的凱基內部對應碼，請聯絡管理員補足。`, stat: 'FAIL' });
+    }
 
     try {
-        console.log(`[Proxy] Fetching ${stock} (${type})...`);
-        const response = await axios.get(apiUrl, {
+        const apiUrl = 'https://warrant.kgi.com/EDWebService/WSInterfaceSwap.asmx/GetService';
+        const parametersOfJson = JSON.stringify({
+            "NORMAL_OR_CATTLE_BEAR": 0, "INSWRT_ISSUER_NAME": "ALL",
+            "STRIKE_FROM": -1, "STRIKE_TO": -1, "VOLUME": -1,
+            "UND_INSTR_INSNBR": internalId, 
+            "LAST_DAYS_FROM": -1, "LAST_DAYS_TO": -1, "IMP_VOL": -1, "CP": type || "ALL",
+            "IN_OUT_PERCENT_FROM": -1, "IN_OUT_PERCENT_TO": -1,
+            "BID_ASK_SPREAD_PERCENT": -1, "LEVERAGE": -1, "EXECRATE": -1,
+            "OUTSTANDING_PERCENT": -1, "BARRIER_DEAL_PERCENT": -1,
+            "LocationPathName": "/edwebsite/views/warrantsearch/warrantsearch.aspx"
+        });
+
+        const requestData = qs.stringify({
+            serviceId: 'S0600013_GetWarrants',
+            parametersOfJson: parametersOfJson
+        });
+
+        const response = await axios.post(apiUrl, requestData, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-                'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Referer': `https://www.twse.com.tw/zh/page/warrant/${apiPath}.html`
-            },
-            timeout: 8000
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': 'https://warrant.kgi.com/edwebsite/views/warrantsearch/warrantsearch.aspx'
+            }
         });
 
-        // 檢查證交所回傳狀態碼
-        if (response.data && response.data.stat !== 'OK' && response.data.stat !== '查詢日期無資料') {
-            console.warn(`[TWSE] ${stock} Warning: ${response.data.stat}`);
-        }
+        const xmlText = response.data;
+        const jsonMatch = xmlText.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
+        if (!jsonMatch || !jsonMatch[1]) throw new Error('解析 XML 失敗或無資料');
 
-        res.json(response.data);
+        const rawData = JSON.parse(jsonMatch[1]);
+        
+        // 將凱基格式轉換為 TWSE 陣列格式以維持前端相容性
+        const twseFormatData = rawData.map(item => [
+            item.INSTR_STKID,              // 0: 代號
+            item.INSTR_NAME,               // 1: 名稱
+            item.STRIKE_PRICE || '0',     // 2: 履約價
+            item.EXPIRE_DATE || '',        // 3: 到期日
+            item.LAST_DAYS.toString(),     // 4: 剩餘天數
+            '0', '0',                      // 5, 6: 發行/剩餘
+            item.BID1_PRICE || '0',        // 7: 買進
+            item.ASK1_PRICE || '0',        // 8: 賣出
+            item.BID1_PRICE || '0',        // 9: 成交 (暫用補位)
+            '0', '0', '0', '0', '0',       // 10-14
+            item.IN_OUT_PERCENT || '0',    // 15: 價內外%
+            item.DELTA || '0',             // 16: Delta
+            item.BID_IMP_VOL || '0',       // 17: 隱波%
+            item.LEVERAGE || '0',          // 18: 實質槓桿
+            '0'                            // 19
+        ]);
+
+        res.json({ stat: 'OK', data: twseFormatData });
+
     } catch (error) {
-        const status = error.response ? error.response.status : 'ERR';
-        console.error(`[TWSE Error] HTTP ${status}:`, error.message);
-        res.status(500).json({ 
-            error: `交易所連線失敗: ${error.message} (HTTP ${status})`,
-            details: error.response ? error.response.data : null
-        });
+        console.error('KGI Fetch Error:', error.message);
+        res.status(500).json({ error: `凱基 API 連線失敗: ${error.message}`, stat: 'ERROR' });
     }
 });
 
@@ -54,6 +98,6 @@ module.exports = app;
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
-        console.log(`✅ 伺服器已啟動: http://localhost:${PORT}`);
+        console.log(`✅ 凱基版伺服器已啟動: http://localhost:${PORT}`);
     });
 }
