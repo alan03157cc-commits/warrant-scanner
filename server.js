@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 標榜來源：MoneyDJ 指標 API
+// 核心資料來源：MoneyDJ 指標 API
 const GET_WARRANT_URL = 'https://www.moneydj.com/Z/ZK/ZK001/ZK001_GetWarrantList.djhtm';
 
 app.get('/api/warrants', async (req, res) => {
@@ -15,25 +15,13 @@ app.get('/api/warrants', async (req, res) => {
     if (!stock) return res.status(400).json({ error: '缺少代碼' });
 
     try {
-        console.log(`[Proxy] Stealth Fetching for ${stock}...`);
-        
-        // 偽裝完整的瀏覽器標頭，避免 Vercel IP 被 MoneyDJ 直接丟棄
+        console.log(`[Proxy] Fetching MoneyDJ for ${stock}...`);
         const response = await axios.get(`${GET_WARRANT_URL}?stockId=${stock}`, {
             headers: { 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Referer': `https://www.moneydj.com/Z/ZK/ZK001/ZK001_${stock}.djhtm`,
-                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'document',
-                'sec-fetch-mode': 'navigate',
-                'sec-fetch-site': 'same-origin',
-                'sec-fetch-user': '?1',
-                'upgrade-insecure-requests': '1'
+                'Referer': 'https://www.moneydj.com/'
             },
-            timeout: 10000
+            timeout: 6000
         });
 
         let rawData = response.data;
@@ -53,27 +41,45 @@ app.get('/api/warrants', async (req, res) => {
                 ];
             }).filter(x => x !== null);
 
-            if (formatted.length > 0) return res.json({ stat: 'OK', data: formatted, source: 'LIVE' });
+            if (formatted.length > 0) {
+                console.log(`[Proxy] LIVE Success: ${formatted.length} items.`);
+                return res.json({ stat: 'OK', source: 'LIVE', data: formatted });
+            }
         }
     } catch (e) {
-        console.error('[LIVE Error]', e.message);
+        console.error('[Proxy LIVE Failed]', e.message);
     }
 
-    // --- 🌍 萬用保底機制 (Universal Mock) ---
-    // 既然雲端環境連不到實體資料，我們確保使用者搜尋「任何」股票代號都不會落空。
-    const getMockData = (code) => {
+    // --- 🌍 萬用示範數據 (Universal Demo Data) ---
+    // 解決 Vercel IP 被封阻的問題，確保搜尋任何標的都有資料跳出
+    const generateMock = (code) => {
         const base = parseInt(code) || 1234;
-        const mockName = `標的${code}`;
-        return [
-            [`03${base}`, `${mockName}凱基36購01`, "750", "2026-09-01", "180", "50", "20", "2.15", "2.16", "2.15", "1", "2", "3", "4", "5", "15.5", "0.55", "45", "7.2", "0.1"],
-            [`03${base+1}`, `${mockName}群益37購02`, "800", "2026-10-15", "210", "40", "15", "1.88", "1.89", "1.88", "1", "2", "3", "4", "5", "-5.2", "0.48", "42", "8.5", "0.1"],
-            [`08${base+2}P`, `${mockName}元大35售05`, "650", "2026-08-20", "160", "30", "10", "0.95", "0.96", "0.95", "1", "2", "3", "4", "5", "-12.1", "-0.32", "38", "5.4", "0.1"]
-        ];
+        const res = [];
+        const issuers = ['元大', '群益', '凱基', '永豐', '富邦', '中信'];
+        for(let i=1; i<=15; i++) {
+            const isCall = i <= 10;
+            if (type && isCall !== (type === 'C')) continue;
+            
+            const name = `${stock}${issuers[i%issuers.length]}${35+i}購0${i}`;
+            const strike = (800 + i*10).toString();
+            const days = (100 + i*15).toString();
+            const mon = (i % 2 === 0 ? "+" : "-") + (i*2.5).toFixed(1);
+            const lev = (5 + i*0.5).toFixed(1);
+            const price = (0.5 + i*0.2).toFixed(2);
+            
+            res.push([
+                `03${base+i}${isCall?'':'P'}`, name, strike, "2026-10-15", days, "5000", "1200", 
+                price, price, price, "0", "0", "0", "0", "0", mon, "0", "0", lev, "0"
+            ]);
+        }
+        return res;
     };
 
-    const mockData = getMockData(stock);
-    res.json({ stat: 'OK', data: mockData, source: 'MOCK', note: '目前偵測到雲端 IP 受限，已自動切換至示範快取數據。' });
+    const mockData = generateMock(stock);
+    res.json({ stat: 'OK', source: 'MOCK', data: mockData, note: '雲端受限，目前為示範數據' });
 });
 
 module.exports = app;
-if (require.main === module) { app.listen(3000, () => console.log('Listening 3000...')); }
+if (require.main === module) { 
+    app.listen(3000, () => console.log('Listening for search...'));
+}
