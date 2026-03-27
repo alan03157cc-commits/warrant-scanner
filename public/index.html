@@ -362,7 +362,7 @@ async function fetchTWSEWarrants(stockNo, type) {
   // TWSE 認購/認售權證每日行情
   // endpoint: https://www.twse.com.tw/rwd/zh/warrant/TWTAUU?response=json&stockNo=2330&type=C
   const typeCode = type === 'C' ? 'C' : 'P';
-  const url = `https://corsproxy.io/?url=${encodeURIComponent(`https://www.twse.com.tw/rwd/zh/warrant/TWTAUU?response=json&stockNo=${stockNo}&type=${typeCode}`)}`;
+  const url = `https://api.allorigins.win/raw?url=${encodeURIComponent(`https://www.twse.com.tw/rwd/zh/warrant/TWTAUU?response=json&stockNo=${stockNo}&type=${typeCode}`)}`;
 
   const resp = await fetch(url, {
     headers: { 'Accept': 'application/json' }
