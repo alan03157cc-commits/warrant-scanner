@@ -8,19 +8,13 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 全面內建 KGI 與 TWSE 相容代碼
-const STOCK_MAP = {
-    '2330': '11467', '2317': '11475', '2454': '11478', '2492': '11472',
-    '2603': '11487', '0050': '11460', '0056': '11476', '2303': '11465',
-    '2609': '11488', '2881': '11503', '2882': '11504', '2382': '11484',
-    '3231': '11512', '2409': '11477', '3481': '11514', '2376': '11482'
-};
+const STOCK_MAP = { '2330': '11467', '2317': '11475', '2454': '11478', '2492': '11472' };
 
 app.get('/api/warrants', async (req, res) => {
     const { stock, type } = req.query;
     if (!stock) return res.status(400).json({ error: '缺少代碼' });
 
-    // 備案 1: 凱基 KGI (通常在 Vercel 較穩定)
+    // --- 來源 1: 凱基 KGI ---
     const kgiId = STOCK_MAP[stock];
     if (kgiId) {
         try {
@@ -28,53 +22,59 @@ app.get('/api/warrants', async (req, res) => {
             const params = JSON.stringify({
                 "NORMAL_OR_CATTLE_BEAR": 0, "INSWRT_ISSUER_NAME": "ALL",
                 "STRIKE_FROM": -1, "STRIKE_TO": -1, "VOLUME": -1,
-                "UND_INSTR_INSNBR": kgiId, 
-                "LAST_DAYS_FROM": -1, "LAST_DAYS_TO": -1, "IMP_VOL": -1, "CP": type || "ALL",
+                "UND_INSTR_INSNBR": kgiId, "CP": type || "ALL",
                 "LocationPathName": "/edwebsite/views/warrantsearch/warrantsearch.aspx"
             });
-
             const response = await axios.post(apiUrl, qs.stringify({ serviceId: 'S0600013_GetWarrants', parametersOfJson: params }), {
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0' },
-                timeout: 5000
+                timeout: 4000
             });
-
-            const content = response.data;
-            const jsonStr = content.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
+            const jsonStr = response.data.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
             if (jsonStr && jsonStr[1]) {
                 const data = JSON.parse(jsonStr[1]);
-                if (data.length > 0) {
-                    const converted = data.map(d => [
-                        d.INSTR_STKID, d.INSTR_NAME, d.STRIKE_PRICE || '0', d.EXPIRE_DATE || '',
-                        d.LAST_DAYS.toString(), '0', '0', d.BID1_PRICE || d.PRICE || '0', d.ASK1_PRICE || d.PRICE || '0',
-                        d.PRICE || '0', '0', '0', '0', '0', '0', d.IN_OUT_PERCENT || '0',
-                        d.DELTA || '0', d.BID_IMP_VOL || '0', d.LEVERAGE || '0', '0'
-                    ]);
-                    console.log(`[Proxy] KGI Match for ${stock}: ${data.length} items.`);
-                    return res.json({ stat: 'OK', data: converted });
-                }
+                if (data.length > 0) return res.json({ stat: 'OK', data: data.map(d => [
+                    d.INSTR_STKID, d.INSTR_NAME, d.STRIKE_PRICE || '0', d.EXPIRE_DATE || '',
+                    d.LAST_DAYS.toString(), '0', '0', d.BID1_PRICE || '0', d.ASK1_PRICE || '0',
+                    d.PRICE || '0', '1', '2', '3', '4', '5', d.IN_OUT_PERCENT || '0',
+                    d.DELTA || '0', d.BID_IMP_VOL || '0', d.LEVERAGE || '0', '0'
+                ])});
             }
-        } catch (e) {
-            console.error('[KGI Engine Failed]', e.message);
-        }
+        } catch (e) {}
     }
 
-    // 備案 2: 證交所 TWSE (Fallback)
+    // --- 來源 2: 群益 Capital (新備援) ---
     try {
-        const twseType = type === 'P' ? 'TWTBUU' : 'TWTAUU';
-        const twseUrl = `https://www.twse.com.tw/rwd/zh/warrant/${twseType}?response=json&stockNo=${stock}`;
-        const twseResp = await axios.get(twseUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' },
-            timeout: 5000
+        const cp = type === 'P' ? '1' : '0';
+        const capUrl = `https://warrant.capital.com.tw/EDWS/GetService.asmx/GetService`;
+        const capParams = JSON.stringify({
+            "NORMAL_OR_CATTLE_BEAR": 0, "UND_INSTR_STKID": stock, "CP": type || "ALL",
+            "LocationPathName": "/edwebsite/views/warrantsearch/warrantsearch.aspx"
         });
-        if (twseResp.data && twseResp.data.data) {
-            console.log(`[Proxy] TWSE Match for ${stock}: ${twseResp.data.data.length} items.`);
-            return res.json(twseResp.data);
+        const capResp = await axios.post(capUrl, qs.stringify({ serviceId: 'S0600013_GetWarrants', parametersOfJson: capParams }), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0' },
+            timeout: 4000
+        });
+        const capMatch = capResp.data.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
+        if (capMatch && capMatch[1]) {
+            const data = JSON.parse(capMatch[1]);
+            if (data.length > 0) return res.json({ stat: 'OK', data: data.map(d => [
+                d.INSTR_STKID, d.INSTR_NAME, d.STRIKE_PRICE || '0', d.EXPIRE_DATE || '',
+                d.LAST_DAYS.toString(), '0', '0', d.BID1_PRICE || '0', d.ASK1_PRICE || '0',
+                d.PRICE || '0', '1', '2', '3', '4', '5', d.IN_OUT_PERCENT || '0',
+                d.DELTA || '0', d.BID_IMP_VOL || '0', d.LEVERAGE || '0', '0'
+            ])});
         }
-    } catch (e) {
-        console.error('[TWSE Engine Failed]', e.message);
-    }
+    } catch (e) {}
 
-    res.json({ stat: 'FAIL', data: [], message: `目前標的 ${stock} 無即時權證資料或連線異常。` });
+    // --- 來源 3: TWSE ---
+    try {
+        const twseResp = await axios.get(`https://www.twse.com.tw/rwd/zh/warrant/${type === 'P' ? 'TWTBUU' : 'TWTAUU'}?response=json&stockNo=${stock}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 4000
+        });
+        if (twseResp.data && twseResp.data.data) return res.json(twseResp.data);
+    } catch (e) {}
+
+    res.json({ stat: 'FAIL', data: [], message: `查無資料。` });
 });
 
 // Vercel 專屬輸出
