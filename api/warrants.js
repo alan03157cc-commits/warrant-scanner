@@ -4,13 +4,15 @@ module.exports = function handler(req, res) {
   const { stock, type } = req.query;
   res.setHeader('Access-Control-Allow-Origin', '*');
 
+  // 使用證交所開放資料 OpenAPI
+  const path = `/v1/exchangeReport/TWTAUU?stockNo=${stock}&type=${type || 'C'}`;
+
   const options = {
-    hostname: 'www.twse.com.tw',
-    path: `/rwd/zh/warrant/TWTAUU?response=json&stockNo=${stock}&type=${type}`,
+    hostname: 'openapi.twse.com.tw',
+    path,
     method: 'GET',
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Referer': 'https://www.twse.com.tw/',
+      'User-Agent': 'Mozilla/5.0',
       'Accept': 'application/json'
     }
   };
