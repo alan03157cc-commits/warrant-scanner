@@ -8,11 +8,16 @@ const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const STOCK_MAP = { '2330': '11467', '2317': '11475', '2454': '11478', '2492': '11472' };
+const STOCK_MAP = { 
+    '2330': '11467', '2317': '11475', '2454': '11478', '2492': '11472',
+    '2603': '11487', '0050': '11460', '0056': '11476', '2303': '11465',
+    '3231': '11512', '2382': '11484', '2308': '11470', '2618': '11491',
+    '2609': '11488', '2881': '11503', '2882': '11504', '2886': '11508'
+};
 
 app.get('/api/warrants', async (req, res) => {
     const { stock, type } = req.query;
-    if (!stock) return res.status(400).json({ error: '缺少代碼' });
+    if (!stock) return res.status(400).json({ error: '缺少標的代號' });
 
     // --- 來源 1: 凱基 KGI ---
     const kgiId = STOCK_MAP[stock];
