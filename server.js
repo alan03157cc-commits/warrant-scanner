@@ -2,65 +2,67 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const axios = require('axios');
-const qs = require('qs');
+const cheerio = require('cheerio');
 
 const app = express();
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
-
-const STOCK_MAP = { 
-    '2330': '11467', '2317': '11475', '2454': '11478', '2492': '11472',
-    '2603': '11487', '0050': '11460', '0056': '11476', '2303': '11465',
-    '3231': '11512', '2382': '11484', '2308': '11470', '2618': '11491',
-    '2609': '11488', '2881': '11503', '2882': '11504', '2886': '11508'
-};
 
 app.get('/api/warrants', async (req, res) => {
     const { stock, type } = req.query;
     if (!stock) return res.status(400).json({ error: '缺少代碼' });
 
     try {
-        // --- 1. 自動偵測標的 KGI 內部 ID ---
-        const findIdUrl = 'https://warrant.kgi.com/EDWebService/WSInterfaceSwap.asmx/GetService';
-        const findIdParams = JSON.stringify({ "KeyWord": stock });
-        const findIdResp = await axios.post(findIdUrl, qs.stringify({ serviceId: 'S0600013_GetUnderlyingAutoComplete', parametersOfJson: findIdParams }), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0' },
-            timeout: 5000
+        console.log(`[Proxy] Scraping MoneyDJ for ${stock} (${type})...`);
+        // MoneyDJ 標的頁面 (例如: https://www.moneydj.com/Z/ZK/ZK001/ZK001_2330.djhtm)
+        const url = `https://www.moneydj.com/Z/ZK/ZK001/ZK001_${stock}.djhtm`;
+        const response = await axios.get(url, {
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Referer': 'https://www.moneydj.com/'
+            },
+            timeout: 8000
         });
-        const findIdMatch = findIdResp.data.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
-        if (!findIdMatch || !findIdMatch[1]) throw new Error(`找不到標的 ${stock} 的內部代號`);
-        const undData = JSON.parse(findIdMatch[1]);
-        const target = undData.find(u => u.VAL.includes(stock)) || undData[0];
-        const internalId = target.ID;
-        console.log(`[AutoID] ${stock} -> ${internalId} (${target.VAL})`);
 
-        // --- 2. 使用偵測到的 ID 抓取權證 ---
-        const getWrtParams = JSON.stringify({
-            "NORMAL_OR_CATTLE_BEAR": 0, "INSWRT_ISSUER_NAME": "ALL",
-            "STRIKE_FROM": -1, "STRIKE_TO": -1, "VOLUME": -1,
-            "UND_INSTR_INSNBR": internalId, "CP": type || "ALL",
-            "LocationPathName": "/edwebsite/views/warrantsearch/warrantsearch.aspx"
+        const $ = cheerio.load(response.data);
+        const data = [];
+        
+        // MoneyDJ 的表格通常 class 為 t10
+        $('table.t10 tr').each((i, row) => {
+            if (i < 1) return; // 跳過標題
+            const cols = $(row).find('td');
+            if (cols.length < 10) return;
+
+            const nameStr = $(cols[0]).text().trim(); // 代號 + 名稱
+            const code = nameStr.match(/\d+/)?.[0] || '';
+            const price = $(cols[1]).text().trim() || '0';
+            const strike = $(cols[3]).text().trim() || '0';
+            const inOut = $(cols[4]).text().trim() || '0';
+            const lev = $(cols[6]).text().trim() || '0';
+            const days = $(cols[8]).text().trim() || '0';
+            const typeStr = $(cols[10]).text().trim(); // 類型 (認購/認售)
+
+            // 過濾類型
+            if (type && typeStr && !typeStr.includes(type === 'P' ? '認售' : '認購')) return;
+
+            // 偽裝成證交所格式
+            data.push([
+                code, nameStr, strike, '', days, '0', '0', price, price,
+                price, '0', '0', '0', '0', '0', inOut,
+                '0', '0', lev, '0'
+            ]);
         });
-        const getWrtResp = await axios.post(findIdUrl, qs.stringify({ serviceId: 'S0600013_GetWarrants', parametersOfJson: getWrtParams }), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Mozilla/5.0' },
-            timeout: 5000
-        });
-        const getWrtMatch = getWrtResp.data.match(/<ValueOfJson>(.*?)<\/ValueOfJson>/);
-        if (getWrtMatch && getWrtMatch[1]) {
-            const data = JSON.parse(getWrtMatch[1]);
-            res.json({ stat: 'OK', data: data.map(d => [
-                d.INSTR_STKID, d.INSTR_NAME, d.STRIKE_PRICE || '0', d.EXPIRE_DATE || '',
-                d.LAST_DAYS.toString(), '0', '0', d.BID1_PRICE || '0', d.ASK1_PRICE || '0',
-                d.PRICE || '0', '0', '0', '0', '0', '0', d.IN_OUT_PERCENT || '0',
-                d.DELTA || '0', d.BID_IMP_VOL || '0', d.LEVERAGE || '0', '0'
-            ])});
-            return;
+
+        if (data.length > 0) {
+            console.log(`[MoneyDJ] Success: found ${data.length} items for ${stock}`);
+            return res.json({ stat: 'OK', data: data });
         }
     } catch (e) {
-        console.error('[KGI AutoFailed]', e.message);
+        console.error('[MoneyDJ Engine Failed]', e.message);
     }
 
-    // --- 備援: 證交所 (TWSE) ---
+    // 備援: 證交所 (TWSE) - 雖然可能被擋，但作為保底
     try {
         const twseResp = await axios.get(`https://www.twse.com.tw/rwd/zh/warrant/${type === 'P' ? 'TWTBUU' : 'TWTAUU'}?response=json&stockNo=${stock}`, {
             headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 5000
@@ -68,16 +70,14 @@ app.get('/api/warrants', async (req, res) => {
         if (twseResp.data && twseResp.data.data) return res.json(twseResp.data);
     } catch (e) {}
 
-    res.json({ stat: 'FAIL', data: [], message: '伺服器連線繁忙或查無資料。' });
+    res.json({ stat: 'FAIL', data: [], message: `目前標的 ${stock} 無即時權證資料或伺服器忙碌。` });
 });
 
-// Vercel 專屬輸出
 module.exports = app;
 
-// 本機開發啟動 (僅在直接執行時)
 if (require.main === module) {
     const PORT = process.env.PORT || 3000;
     app.listen(PORT, () => {
-        console.log(`✅ 凱基版伺服器已啟動: http://localhost:${PORT}`);
+        console.log(`✅ MoneyDJ 爬選模式啟動: http://localhost:${PORT}`);
     });
-}
+}
