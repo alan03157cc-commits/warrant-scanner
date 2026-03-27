@@ -20,3 +20,8 @@ module.exports = async function handler(req, res) {
     res.status(500).send('ERROR: ' + err.message);
   }
 }
+```
+
+推上去後直接瀏覽器打開：
+```
+https://warrant-scanner.vercel.app/api/warrants?stock=2330&type=C
